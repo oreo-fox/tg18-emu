@@ -89,6 +89,18 @@ SAVE_LOOP_EXIT = 0x20                             # offset of the `b` after the 
 SPIN_LOOP = bytes.fromhex('c046013b002bfbd1')
 SPIN_LOOP_INSNS = 4
 
+# The game's clock refresh (Thumb, WG 2012C0D0): reads the RTC chip and
+# writes month/day/hour/minute for display and time-of-day checks. The
+# firmware only calls it when it boots, which on a real toy happens at every
+# wake-up, i.e. once a minute while asleep. With never-sleep there are no
+# wake-ups, so the emulator calls it once a minute itself (argument 0, as at
+# boot). The two ldr literals, two bl's and one more ldr are wildcards.
+CLOCK_REFRESH_RE = re.compile(b''.join(
+    b'.' if part == '??' else re.escape(bytes.fromhex(part)) for part in (
+        '70b58ab0060006a8 ?? 4b ?? ?? ?? ?? 099b019303a91800 ?? 4b ?? ?? ?? ?? 049d ?? 4c'
+        ' 2573 0599 6173 089a a273 079b e373').split()), re.S)
+CALL_RETURN = 0x207FFFF0      # erased flash: where firmware calls from Python stop
+
 _IDLE_COUNTERS = {}           # ROM code -> idle counter address
 
 
@@ -469,14 +481,35 @@ RTC_PERIODIC = {0x2: 1.0}
 
 
 class RtcIrq:
-    """Periodic interrupts of the RTC block at C0040000 (ISR F80013B0).
+    """The SoC's own real-time clock at C0040000 (ISR F80013B0).
 
-    +0x54 status (write 1 clears), +0x58 enable.
+    +0x00 seconds, +0x04 minutes, +0x08 hours: the time of day, which counts;
+    the firmware sets it by writing these (from the RTC chip at boot, or when
+    the clock is set) and reads it for the clock screen and the game's
+    time-of-day (20007D1C in EN Magic; hour 23 -> 0 counts a day).
+    +0x10/+0x14/+0x18 alarm time, +0x54 status (write 1 clears), +0x58 enable.
     """
 
     def __init__(self, periph):
         self.p = periph
         self.fired = {bit: 0 for bit in RTC_PERIODIC}
+        self.tod_base = 0                       # seconds since midnight when set
+        self.tod_set_at = 0.0                   # game_time when it was set
+
+    def tod(self):
+        """Seconds since midnight now."""
+        return int(self.tod_base + self.p.game_time - self.tod_set_at) % 86400
+
+    def read_tod(self, field):
+        t = self.tod()
+        return (t % 60, t // 60 % 60, t // 3600)[field]
+
+    def write_tod(self, field, value):
+        t = self.tod()
+        parts = [t % 60, t // 60 % 60, t // 3600]
+        parts[field] = value
+        self.tod_base = (parts[2] % 24) * 3600 + (parts[1] % 60) * 60 + parts[0] % 60
+        self.tod_set_at = self.p.game_time
 
     def advance(self):
         status = self.p.regs.get(RTC_IRQ_BASE + 0x54, 0)
@@ -763,6 +796,8 @@ class Peripherals:
         self.reads = dict(READ_QUIRKS)
         self.writes = dict(WRITE_HOOKS)
         self.writes[LCD_BASE + 0x140] = lambda p, v: p.lcd.write_ctrl(v)
+        for field in range(3):                  # the SoC clock's time of day counts
+            self.reads[RTC_IRQ_BASE + 4 * field] = lambda p, old, f=field: p.rtc_irq.read_tod(f)
         self.reads[RTC_BUS + 0x10] = lambda p, old: 1
         self.reads[RTC_BUS + 0x14] = lambda p, old: p.rtc.data_out
         self.writes[RTC_BUS + 0x0C] = lambda p, v: p.rtc.command(v)
@@ -919,6 +954,9 @@ class Peripherals:
             if word == RTC_IRQ_BASE + 0x54:
                 self.rtc_irq.write_status(new, old, (val << sh) & mask)
                 return
+            if RTC_IRQ_BASE <= word <= RTC_IRQ_BASE + 8:     # time of day
+                self.rtc_irq.write_tod((word - RTC_IRQ_BASE) // 4, new)
+                return
             self.regs[word] = new
             hook = self.writes.get(word)
             if hook:
@@ -962,6 +1000,11 @@ def c_printf(uc, fmt, args):
             conv = 'd'
         return ('%' + flags + width + conv) % v
     return re.sub(r'%([-0 +#]*)(\d*)(?:l|h|hh|ll)?([diuxXpsc%])', sub, fmt)
+
+
+def uc_mode(uc):
+    """The ARM processor mode (0x12 = IRQ, 0x13 = SVC, ...)."""
+    return uc.reg_read(UC_ARM_REG_CPSR) & 0x1F
 
 
 class RegReader:
@@ -1031,6 +1074,9 @@ class Emulator:
         if code not in _IDLE_COUNTERS:
             _IDLE_COUNTERS[code] = find_idle_counter(self.image)
         self.idle_counter = _IDLE_COUNTERS[code]
+        m = CLOCK_REFRESH_RE.search(self.image, 0, 0x220000)
+        self.clock_refresh = FLASH_BASE + m.start() if m else None
+        self.clock_minute = None                        # RTC minute the game's clock shows
         self.never_sleep = False                        # keep resetting idle_counter
         self.idle_reset_at = 0.0                        # emulated time of the last reset
         self._hook_spi2_transfer()
@@ -1114,6 +1160,37 @@ class Emulator:
                 self.uc.mem_write(UART_PAGE[0] + off, struct.pack('<I', val & 0xFFFFFFFF))
         self.uart_is_ram = True
         self.periph.on_infrared = None
+
+    def call_firmware(self, func, arg=0, limit=5_000_000):
+        """Run a firmware function (Thumb) to completion from a quiet moment.
+
+        All registers are saved and restored, so the interrupted code carries
+        on as if nothing happened; memory changes made by the function stay.
+        Returns True if the function returned within limit instructions.
+        """
+        uc = self.uc
+        ctx = uc.context_save()
+        sp = uc.reg_read(UC_ARM_REG_SP)
+        uc.reg_write(UC_ARM_REG_R0, arg)
+        uc.reg_write(UC_ARM_REG_SP, (sp - 0x100) & ~7)  # stay clear of the caller's frame
+        uc.reg_write(UC_ARM_REG_LR, CALL_RETURN | 1)
+        try:
+            uc.emu_start(func | 1, CALL_RETURN, count=limit)
+            done = uc.reg_read(UC_ARM_REG_PC) == CALL_RETURN
+        except UcError:
+            done = False
+        uc.context_restore(ctx)
+        return done
+
+    def _refresh_clock(self):
+        """With never-sleep, update the game's clock when the real minute changes."""
+        minute = self.periph.rtc_irq.tod() // 60       # the SoC clock the game reads
+        if minute == self.clock_minute:
+            return
+        if uc_mode(self.uc) == 0x12:                    # never from inside an interrupt
+            return
+        if self.call_firmware(self.clock_refresh, 0):
+            self.clock_minute = minute
 
     def _finish_spin(self, pc):
         """If the CPU stopped inside a delay loop, finish the loop in one step."""
@@ -1379,6 +1456,8 @@ class Emulator:
                     probe_wait -= 1
                 elif self.try_idle_skip(max_insns):
                     stuck_slices = 0                    # waiting is not hanging
+                    if self.never_sleep and self.clock_refresh:
+                        self._refresh_clock()
                     chunk = IDLE_SLICE
                     continue
                 else:
@@ -1502,7 +1581,7 @@ CODE_CHECK_LEN = 0x1E0000     # compared to make sure a save matches its ROM
 # Peripheral fields captured in snapshots, per object
 SNAP_FIELDS = {
     'periph': ('regs', 'now', 'game_time', 'powered_off', 'gpio_applied'),
-    'rtc_irq': ('fired',),
+    'rtc_irq': ('fired', 'tod_base', 'tod_set_at'),
     'lcd': ('fb', 'cmd', 'args', 'x0', 'x1', 'y0', 'y1', 'x', 'y', 'half',
             'frames', 'last_vsync'),
     'rtc': ('regs', 'base_ticks', 'base_time', 'data_out'),
@@ -1607,6 +1686,11 @@ def restore_snapshot(emu, state):
         p.game_time = p.now
     if 'rtc_irq' not in state:
         p.rtc_irq.fired = {bit: int(p.game_time / per) for bit, per in RTC_PERIODIC.items()}
+    if 'tod_base' not in state.get('rtc_irq', {}):      # older snapshot: the time stood still
+        r = p.regs
+        p.rtc_irq.tod_base = (r.get(RTC_IRQ_BASE + 8, 0) % 24 * 3600
+                              + r.get(RTC_IRQ_BASE + 4, 0) % 60 * 60 + r.get(RTC_IRQ_BASE, 0) % 60)
+        p.rtc_irq.tod_set_at = p.game_time
     emu.hook_flash_write()                              # SRAM code is already in place
     return state
 

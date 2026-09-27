@@ -150,7 +150,7 @@ snapshots refuse to load with a different ROM version.
 | 0xC0090000 | RTC register bus | +4 addr, +8 wdata, +0xC cmd (1 wr/2 rd), +0x10 ready, +0x14 rdata |
 | 0xC00C0000 | ADC | +4 ctrl (b14 start, b15 done), +8 result; battery check; IRQ 29 |
 | 0xC0150000 | SPI flash controller | manual mode: +0 b6 CS, +8 TX, +0xC RX, +4 b3 busy |
-| 0xC0040000 | RTC interrupts | +0x54 status (W1C), +0x58 enable; bit 1 = game-time tick (1 Hz assumed); IRQ 1 |
+| 0xC0040000 | SoC real-time clock | +0/+4/+8 seconds/minutes/hours (counts; the game sets it by writing), +0x10/+0x14/+0x18 alarm, +0x54 status (W1C), +0x58 enable; bit 1 = game-time tick (1 Hz assumed); IRQ 1 |
 | 0xD0000000 | clock/system | +0x3C clock source status, +0x78 bit 0 = power (cleared for deep sleep) |
 | 0xD0100000 | interrupt controller | +0x28 pending IRQ number, +0x30 mask, +0x38 b0 disable |
 | 0xD0500000 | LCD interface | 128x128 RGB565; +0x140 ctrl (0x81 cmd, 0xA1 data, 0xD1 DMA from +0x33C), +0x18C status (0x2000 vsync, 0x40 DMA done); IRQ 27 |
@@ -230,6 +230,15 @@ true length and keeping 50-90 ms queued; `tg18emu.py --wav` writes it to a file.
 * The firmware won't go to sleep while the pet is calling for attention (it
   starts to, then cancels). Closing the window then keeps an autosave snapshot
   instead of the sleep-based save.
+* The clock screen (B in the room) and the game's time of day read the SoC
+  clock at 0xC0040000 (+0/+4/+8 = seconds/minutes/hours, read by 20007D1C in
+  EN Magic, which also counts a day when the hour goes 23 -> 0). The game
+  sets it from the RTC chip at boot and when you set the clock. The stored
+  date/time the game compares against (0xF800BE38: month, day, hour, minute)
+  is only refreshed at boot (routine found by code pattern in all nine
+  images), which on a real toy is every wake-up, i.e. once a minute while
+  asleep. With never-sleep the emulator calls that routine itself once a
+  minute, at a quiet moment in the main loop, with all registers restored.
 * While asleep the toy wakes on its RTC alarm about once a minute, updates the
   pet (hunger, happiness, age) and sleeps again; this is how time passes for
   the pet. Moving the clock forward alone doesn't age or feed it.
