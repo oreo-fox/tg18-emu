@@ -1,0 +1,15 @@
+# Firmware dumps and anything derived from them: never commit these.
+# Save files and snapshots contain a full copy of the flash (the firmware).
+*.bin
+*.flash
+*.flash.json
+*.snap
+saves/
+
+# Screenshots show the game's copyrighted graphics.
+*.png
+frames/
+
+# Python
+__pycache__/
+*.pyc
