@@ -13,3 +13,10 @@ frames/
 # Python
 __pycache__/
 *.pyc
+
+# window settings (local paths)
+settings.json
+settings.json.tmp
+
+# private notes for Claude (never commit)
+CLAUDE.local.md

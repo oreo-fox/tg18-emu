@@ -5,10 +5,20 @@ built as a feasibility study. No firmware is included; you need your own
 8 MiB SPI flash dump.
 
 Status: a playable prototype. All nine known dumps boot to the clock-setting
-screen. The Wonder Garden (EN v063) image has been played through setup (clock,
-birthday, name) to a hatched baby, feeding and the menus, with saves and deep
-sleep/wake working. A live window (`tg18win.py`) shows the screen, takes the
-A/B/C buttons and plays the buzzer sound at real-time speed on normal screens.
+screen. Wonder Garden (EN v063) and Magic (EN v058) have been played from setup
+(clock, birthday, name) to a hatched baby, with feeding, the menus, saves and
+deep sleep/wake working. A live window (`tg18win.py`) shows the screen, takes
+the A/B/C buttons, plays the buzzer sound and runs at real-time speed on
+normal screens, with a ROM menu, settings, autosave and save slots.
+
+Not emulated yet:
+
+* Bluetooth (the phone app, the camera item) and infrared connections with
+  another Tamagotchi. The window blocks them with a notice instead of letting
+  the game hang.
+* Time passing for the pet while the window is closed (the clock moves on, the
+  pet is paused, like a toy with the batteries out).
+* The backlight (dimming) and the two unidentified input pins.
 
 ## Legal
 
@@ -26,15 +36,49 @@ The emulator code is released under the MIT License (see `LICENSE`).
 
 ### Playing in a window
 
-    python tg18win.py <flash.bin> --save saves/mygame.flash
+    python tg18win.py
 
-Shows the screen at 4x and plays live. Press A, B and C with the `A` `B` `C`
-keys, the arrow keys (Left = A, Down = B, Right = C) or by clicking the
-buttons. Hold A and C together to press both, and press `M` to mute. The save
-is written when the device goes to sleep and when you close the window. Options: `--save FILE`,
-`--snapshot-in FILE`, `--snapshot-out FILE`, `--date`, `--scale N`,
-`--volume 0-100`. Uses only tkinter and ctypes, which come with Python. Sound
-plays through Windows' built-in winmm; on other systems the window runs silent.
+The first time, it asks for the folder with your ROM dumps; after that it
+reopens the last ROM and continues where you left off. `python tg18win.py
+<flash.bin>` opens a specific dump. Uses only tkinter and ctypes, which come
+with Python. Sound plays through Windows' built-in winmm; on other systems the
+window runs silent.
+
+Press A, B and C with the `A` `B` `C` keys, the arrow keys (Left = A,
+Down = B, Right = C) or by clicking the buttons. Hold A and C together to
+press both. `M` mutes, `Ctrl+S` saves.
+
+* **File**: Open ROM (every dump in the ROM folder), Choose ROM folder,
+  Save now, Save to slot / Load slot (3 slots per ROM), Open saves folder.
+* **Settings**: volume, mute, screen size (2x-6x), autosave interval (off,
+  1, 2, 5 or 10 minutes), Never sleep (default on) and Pause time while
+  closed (default off). Settings are kept in `settings.json`.
+
+Saves are kept per ROM in `saves/<rom name>/`:
+
+* `game.flash` (+ `.json`): the toy's own flash save and clock. When you
+  close the window or switch ROMs, the device is put to sleep first, so the
+  game saves itself exactly as the real toy does, and next time it wakes
+  straight into the game.
+* `autosave.snap`: a snapshot of the whole machine, taken at the autosave
+  interval (compressed on a background thread, so play doesn't stutter). If
+  the window was not closed normally, the game resumes from here.
+* `slot1-3.snap`: manual save slots. Loading a slot autosaves the current game
+  first.
+
+Bluetooth (the phone app, the camera item) and infrared connections with
+another Tamagotchi are not supported: choosing one shows a notice and puts
+the game back to just before you chose it.
+
+Saves from before per-ROM folders (`saves/*.flash`) are imported automatically
+the first time their ROM is opened.
+
+Time while closed: the pet makes no progress while the window is closed, like
+a Tamagotchi with the batteries out. The device clock still moves forward by
+the time away, so the time of day stays right (unless Pause time while closed
+is on). The firmware only counts time for the pet through the alarm wake-ups
+it makes about once a minute while asleep; replaying those would take ~45 s
+per 30 minutes away, so they are deliberately skipped.
 
 The window keeps up with real time on normal screens. In the rare busy
 moments when it can't (such as loading the room after CONTINUE, about 2 s at
@@ -57,6 +101,7 @@ match, so the game's time of day stays in step with the real clock.
 * `--turbo N`      run the device clock N times faster (fast-forward game time)
 * `--wav FILE`     write the run's buzzer sound to a WAV file (silences longer
   than 2 s, such as deep sleep, are shortened)
+* `--never-sleep`  keep the device awake (resets the firmware's idle counter)
 * `--trace-mmio`   print the first access to every hardware register
 
 Deep sleep is emulated: after about a minute without input the firmware arms
@@ -141,6 +186,53 @@ true length and keeping 50-90 ms queued; `tg18emu.py --wav` writes it to a file.
   real toy.
 * The CONTINUE / RESET ALL menu after a battery change ignores buttons for about
   3 s after it appears.
+* Sleep: the backlight dims about 10 s after the last button press. After
+  that, the once-a-second game routine counts idle seconds in a byte
+  (0xF800D763 in the EN builds) and, past 30, sets SleepFlag = 2; the main loop
+  then saves to flash (ParamSave), arms the RTC alarm and cuts the power, so
+  the toy sleeps 40 s after the last press. The 2018 JP builds (v030, v031)
+  count in the RTC interrupt instead, with a 180 s limit. The emulator finds
+  the counter by its code pattern (`ldrb r3,[rN,#k]; cmp r3,#limit; bhi`,
+  then `SleepFlag = 2`), found once in each of the nine images.
+* Saving: the game writes its save area to flash two bytes at a time (130 KB
+  when an egg hatches, about 11,800 flash operations when a new game formats
+  its save area), and the SPI driver needs ~65 register accesses per byte. The
+  emulator runs the driver's `flash_write(addr, buf, len)` (found by its code,
+  in all nine images) and the game's halfword save loop (in the seven 2019+
+  images; its address limits are read from the firmware) directly, with NOR
+  semantics (bits only go from 1 to 0). The game's own read-back check after
+  each save still runs. Hatching went from ~70 s to ~2 s, and the first
+  PLEASE WAIT from 10.5 s to 4 s.
+* Bluetooth: the BLE chip sits on a second SPI master at 0xC0080000 (+8 TX
+  byte, +0xC bits 0-2 = byte done, +0x10 RX byte; driver `spi_transfer` found
+  in all nine images). Nothing in normal play touches it; items and menus that
+  talk to the phone app do (Item Box > Special > Camera, Connection > App >
+  Visit/Download). It is not emulated. The window stops the game on its first
+  transfer, puts it back to just before the button press that led there (a
+  snapshot is kept from before each press, at most one per second) and shows
+  a notice. Without that, the chip reads as absent (0x00), start-up times out
+  and the firmware prints "BLE Initial Fail" and loops forever ignoring every
+  button; the emulator also watches for that loop (then the window restarts
+  the toy like a battery change). Its 16-bit status register 0x0A is read by
+  sending 0x0B and two dummy bytes: 0x8040 when the chip is up, 0x8000 after
+  the start-up tables (~345 KB, command AC 55) are loaded, bit 14 = busy.
+* Infrared: a serial port at 0xC0060000 (IrDA; +0 data, +8 control, +0xC baud,
+  +0x10 status with bit 3 = busy). Boot only configures it (+8, +0xC); the IR
+  code (Connection > Tamagotchi > Playdate/Gift/Marry, Connection > Download)
+  uses +0, +0x10, +0x14, +0x20 and then waits for a partner indefinitely,
+  ignoring C. The window blocks it the same way as Bluetooth. Otherwise the
+  port becomes plain memory after that first access ("idle, nothing
+  received") and the IR pulse timing loops (`mov r8,r8; subs r3,#1; cmp r3,#0;
+  bne`, 5-6 per image) are finished in one step when the CPU is found inside
+  one between slices, so waiting runs at ~0.5x instead of ~0.02x. (Code hooks
+  on those loops cost ~20% speed everywhere even when unused, so they are not
+  hooked.)
+* The firmware won't go to sleep while the pet is calling for attention (it
+  starts to, then cancels). Closing the window then keeps an autosave snapshot
+  instead of the sleep-based save.
+* While asleep the toy wakes on its RTC alarm about once a minute, updates the
+  pet (hunger, happiness, age) and sleeps again; this is how time passes for
+  the pet. Moving the clock forward alone doesn't age or feed it.
 * The main loop calls newlib's rand() once per pass and discards the result,
   only to stir the sequence, so random events depend on when buttons are
   pressed. rand()'s 64-bit state lives in the reent struct (+0xA8), at

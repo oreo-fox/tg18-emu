@@ -29,7 +29,18 @@ SRAM_SIZE = 0x00100000
 # million times a second, and leaving the CPU core for each read dominated
 # the run time. Button bits are written into it when they change.
 GPIO_PAGE = (0xC0000000, 0x1000)
-MMIO_REGIONS = [(0xC0001000, 0x00FFF000),
+# The serial port used for infrared (IrDA): +0 data, +8 control, +0xC baud,
+# +0x10 status (bit 3 busy). Boot only configures it (+8, +0xC); the IR code
+# (Connection menu) uses +0, +0x10, +0x14, +0x20 and then polls the status
+# ~3 million times a second waiting for a partner. It starts as MMIO, so that
+# first IR access is seen (see Emulator.on_infrared); after it the page
+# becomes plain memory, which reads "idle, nothing received" (no partner).
+UART_PAGE = (0xC0060000, 0x1000)
+UART_IR_REGS = (0x00, 0x10, 0x14, 0x20)
+PLAIN_PAGES = {'gpio': GPIO_PAGE}
+MMIO_REGIONS = [(0xC0001000, 0x0005F000),
+                UART_PAGE,
+                (0xC0061000, 0x00F9F000),
                 (0xD0000000, 0x01000000),
                 (0xFF000000, 0x00FFF000)]
 RESET_PC = 0x20000048
@@ -48,10 +59,115 @@ IDLE_SRAM_CHECK = 0x20000     # .data/.bss/stacks live in the first 128 KiB
 RAND_SIG = bytes.fromhex('a8e090e5910e03e02cc09fe5ac1090e59c3121e0'
                          '9e2c83e0012092e2033081e00030a3e2a82080e5ac3080e5')
 RAND_STATE_OFF = 0xA8         # state offset in the reent struct
+
+
+# flash_write(cpu_addr, buf, len) of the SPI flash driver, the start of the
+# ARM routine the firmware copies into SRAM (F8003180 in Wonder Garden); found
+# once in each of the nine images. It programs through the SPI controller
+# byte by byte, ~65 register accesses per byte, and the game saves in
+# 2-byte calls (130 KB when an egg hatches), so the emulator does the whole
+# call itself: 0.03x -> real time during saves.
+FLASH_WRITE_SIG = bytes.fromhex(
+    'f0472de90070a0e10180a0e1ff4000e2023084e0ff5083e22554a0e1014c64e2'
+    '020054e10240a021010c54e34000000aff0053e33400009a022080e0ff6002e2')
+
+# The game's save loop (Thumb, in SRAM): for i < count: write_halfword(dst + 2i,
+# src[i]), each a flash_write of 2 bytes. Registers at its start: r8 = dst,
+# fp = src, sb = count; it leaves r4 = dst + 2*count, r5 = count, r6 = 0,
+# r7 = src - dst, then `b` to a check that compares the written flash with
+# src. The bl to write_halfword may differ between builds. Found in the seven
+# 2019+ images; the 2018 JP builds save differently (flash_write still helps).
+SAVE_LOOP_RE = (re.escape(bytes.fromhex('444600255b461f1b395b802292052000')) + b'(....)'
+                + re.escape(bytes.fromhex('061e0fd102340135a945f3d1')))
+SAVE_LOOP_EXIT = 0x20                             # offset of the `b` after the loop
+
+# Software delay loop (Thumb): mov r8,r8; subs r3,#1; cmp r3,#0; bne back.
+# The infrared code times its pulses with these (478,000 passes per 20 ms on
+# the Connection > Download screen), and single-instruction loops are the
+# slowest thing for Unicorn, so the loop is finished in one step and the
+# skipped instructions still count as emulated time. 5-6 in each image.
+SPIN_LOOP = bytes.fromhex('c046013b002bfbd1')
+SPIN_LOOP_INSNS = 4
+
+_IDLE_COUNTERS = {}           # ROM code -> idle counter address
+
+
+def find_ble_fail_loop(image):
+    """Address of the `while (1) delay(500)` after "BLE Initial Fail", or None.
+
+    Items that use Bluetooth (the camera talks to the phone app) start the
+    BLE chip on the second SPI master. That chip is not emulated, so its
+    start-up fails, and the firmware then prints "BLE Initial Fail" and
+    loops forever, ignoring every button. Found in all nine images (ARM:
+    ldr r0,=string ... then `b` back three instructions).
+    """
+    s = image.find(b'BLE Initial Fail')
+    if s < 0:
+        return None
+    pool = struct.pack('<I', FLASH_BASE + s)
+    for m in re.finditer(re.escape(pool), image[:0x220000]):
+        p = m.start()
+        for back in range(8, 0x1000, 4):
+            ins = struct.unpack_from('<I', image, p - back)[0]
+            if ins & 0xFFFFF000 == 0xE59F0000 and ins & 0xFFF == back - 8:   # ldr r0,[pc,#imm]
+                i = p - back
+                for j in range(i, i + 0x40, 4):
+                    if struct.unpack_from('<I', image, j)[0] == 0xEAFFFFFB:
+                        return FLASH_BASE + j
+                break
+    return None
+
+
+def find_idle_counter(image):
+    """Address of the firmware's idle-seconds counter, or None if not found.
+
+    Once a second the firmware counts seconds without input and, past a limit
+    (30 s after the backlight dims in 2019+ builds, 180 s in the 2018 ones),
+    sets SleepFlag = 2, which saves and powers down. The code is
+    `ldrb r3,[rN,#k]; cmp r3,#limit; bhi`, then `movs r2,#2 ... strb r2,[r3]`;
+    the counter is field k of the struct loaded by `ldr rN,[pc,#imm]` just
+    before. Found once in each of the nine known images.
+    """
+    import re
+    found = set()
+    for m in re.finditer(rb'(?=[\xc0-\xff][\x78\x79].\x2b.\xd8)', image[:0x220000], re.S):
+        i = m.start()
+        ins = struct.unpack_from('<H', image, i)[0]
+        if ins >> 11 != 0b01111 or ins & 7 != 3:            # ldrb r3,[rN,#k]
+            continue
+        rn, k = (ins >> 3) & 7, (ins >> 6) & 31
+        tail = image[i + 6:i + 16]
+        j = tail.find(b'\x02\x22')                            # movs r2,#2
+        if j < 0 or b'\x1a\x70' not in tail[j:j + 8]:         # strb r2,[r3]
+            continue
+        for back in range(2, 18, 2):                          # ldr rN,[pc,#imm]
+            ld = struct.unpack_from('<H', image, i - back)[0]
+            if ld >> 11 == 0b01001 and (ld >> 8) & 7 == rn:
+                lit = ((i - back + 4) & ~3) + (ld & 0xFF) * 4
+                base = struct.unpack_from('<I', image, lit)[0]
+                if SRAM_BASE <= base < SRAM_BASE + SRAM_SIZE:
+                    found.add(base + k)
+                break
+    return found.pop() if len(found) == 1 else None
 STUCK_SLICES = 10_000         # ~2 s in one 256-byte window with no flash/LCD progress = stuck
 
 # Registers whose reads must not simply echo the last write. Each entry is
 # found by letting the firmware get stuck and reading the polling loop.
+SPI2_BASE = 0xC0080000
+SPI2_IDLE = 0x00              # what every read returns: no chip is emulated on SPI2
+# The camera item talks to an unknown chip on the second SPI master (reads its
+# 16-bit register 0x0A by sending 0x0B and two dummy bytes). The chip is not
+# emulated: it reads as absent, the firmware's waits for it time out after
+# about a second each (1 ms countdown at F8013934 in EN Magic), and the item
+# gives up. 0x00 rather than 0xFF, because one wait (for bit 14, busy, to
+# clear) has no timeout.
+# spi_transfer(dev, tx, txlen, rx, rxlen on stack), ARM, found once in each of
+# the nine images; run in Python so each transfer costs one call instead of
+# ~10 register accesses per byte
+SPI2_XFER_SIG = bytes.fromhex(
+    'f0412de908d04de20050a0e10160a0e10270a0e10380a0e1c6fcffeb000050e3'
+    '100000ba44409fe5003094e540209fe5202083e520309de500308de50830a0e1')
+
 READ_QUIRKS = {
     # clock-source status: 1 = slow clock, 2 = PLL, after the switch bit
     # D000001C[15] is written (see 20013F80)
@@ -64,6 +180,8 @@ READ_QUIRKS = {
     # (1..32, 0 = none) and FIQ (1..4); see dispatcher at F80011AC
     0xD0100028: lambda p, old: p.pending_irq(),
     0xD010002C: lambda p, old: 0,
+    # second SPI: reading the reply empties it (clears the done bits)
+    SPI2_BASE + 0x10: lambda p, old: p.spi2_read(old),
 }
 
 # Registers with side effects on write: addr -> fn(periph, value)
@@ -75,6 +193,12 @@ WRITE_HOOKS = {
     0xC0150000: lambda p, v: p.flash.select(bool(v & 0x40)),
     # SPIFC TX byte: clocks one byte through the flash chip
     0xC0150008: lambda p, v: p.flash.xfer(v & 0xFF),
+    # second SPI master (driver at 20008938 in EN Magic), used by the camera
+    # item: TX byte at +8, then it polls +0xC bits 0-2 up to 10000 times for
+    # the byte to finish and reads the reply at +0x10. Nothing is emulated
+    # on this bus, so each byte completes at once and reads back 0xFF, as
+    # from an empty bus (without this, every byte timed out: 0.06x)
+    SPI2_BASE + 8: lambda p, v: p.spi2_xfer(),
 }
 
 # Buttons: GPIO pins (port*16 + bit) from the key table at 201AD200, read
@@ -541,6 +665,7 @@ class SpiFlash:
         self.wel = False
         self.unknown = set()
         self.writes = 0
+        self.on_first_use = None                        # called on the first chip select
 
     def _addr(self):
         b = self.buf
@@ -550,6 +675,9 @@ class SpiFlash:
         return bytes(self.uc.mem_read(FLASH_BASE + addr, n))
 
     def select(self, on):
+        if self.on_first_use:
+            hook, self.on_first_use = self.on_first_use, None
+            hook()
         if on and not self.cs:
             self.buf = []
         elif not on and self.cs:
@@ -641,6 +769,7 @@ class Peripherals:
         self.held = set()                       # pins currently pressed
         self.key_script = []                    # (time, key) presses
         self.live_keys = set()                  # keys held down right now (window)
+        self.on_infrared = None                 # called on the first infrared access
         self.gpio_applied = [0] * 8             # button bits currently in RAM
         self.mmio_writes = 0
         for t in self.timers:
@@ -654,6 +783,14 @@ class Peripherals:
         """Timer input clock, from the firmware's own clock variable."""
         clk = struct.unpack('<I', bytes(self.uc.mem_read(0xF80090A4, 4)))[0]
         return clk or 24_000_000
+
+    def spi2_xfer(self):
+        self.regs[SPI2_BASE + 0x10] = SPI2_IDLE
+        self.regs[SPI2_BASE + 0x0C] = self.regs.get(SPI2_BASE + 0x0C, 0) | 1
+
+    def spi2_read(self, value):
+        self.regs[SPI2_BASE + 0x0C] = self.regs.get(SPI2_BASE + 0x0C, 0) & ~7
+        return value
 
     def power_write(self, v):
         # boot only ever sets bit 0; clearing it is the deep-sleep request
@@ -742,6 +879,8 @@ class Peripherals:
     def read(self, base):
         def cb(uc, off, size, _):
             addr = base + off
+            if base == UART_PAGE[0] and off & ~3 in UART_IR_REGS and self.on_infrared:
+                self.on_infrared()
             self.pc = uc.reg_read(UC_ARM_REG_PC)
             val = self.regs.get(addr & ~3, 0)
             quirk = self.reads.get(addr & ~3)
@@ -755,6 +894,8 @@ class Peripherals:
     def write(self, base):
         def cb(uc, off, size, val, _):
             addr = base + off
+            if base == UART_PAGE[0] and off & ~3 in UART_IR_REGS and self.on_infrared:
+                self.on_infrared()
             self.pc = uc.reg_read(UC_ARM_REG_PC)
             word = addr & ~3
             sh = (addr & 3) * 8
@@ -863,7 +1004,8 @@ class Emulator:
         start_time = start_time or datetime.datetime.now()
         rtc_seconds = (start_time - datetime.datetime(*RTC_EPOCH)).total_seconds()
         self.periph.rtc.base_ticks = int(rtc_seconds * 32768)
-        uc.mem_map(*GPIO_PAGE, UC_PROT_ALL)
+        for page in PLAIN_PAGES.values():
+            uc.mem_map(*page, UC_PROT_ALL)
         for base, size in MMIO_REGIONS:
             uc.mmio_map(base, size, self.periph.read(base), None,
                         self.periph.write(base), None)
@@ -885,6 +1027,30 @@ class Emulator:
         self.pc_hist = collections.Counter()
         self.rand_state = None                          # SRAM offset of rand()'s 64-bit state
         self.idle_anchor = None                         # PC where the last idle skip succeeded
+        code = self.image[:CODE_CHECK_LEN]                # searched once per ROM, not per wake
+        if code not in _IDLE_COUNTERS:
+            _IDLE_COUNTERS[code] = find_idle_counter(self.image)
+        self.idle_counter = _IDLE_COUNTERS[code]
+        self.never_sleep = False                        # keep resetting idle_counter
+        self.idle_reset_at = 0.0                        # emulated time of the last reset
+        self._hook_spi2_transfer()
+        self.spin_skipped = 0                           # delay-loop instructions not executed
+        # no code hooks here: even unused ones slow Unicorn down (~20% for
+        # six). A long delay is caught where run() stops between slices.
+        self.spin_pcs = {FLASH_BASE + m.start() + i
+                         for m in re.finditer(re.escape(SPIN_LOOP), self.image[:0x220000])
+                         for i in range(0, len(SPIN_LOOP), 2)}
+        self.ble_failed = False                         # the firmware hung waiting for Bluetooth
+        self.bluetooth_used = False                     # the game has started the BLE chip
+        self.infrared_used = False                      # ... or the infrared port
+        self.uart_is_ram = False
+        self.periph.on_infrared = self._infrared
+        self.stop_on_bluetooth = False                  # stop run() with 'bluetooth' when it does
+        loop = find_ble_fail_loop(self.image)
+        if loop:
+            self.uc.hook_add(UC_HOOK_CODE, self._ble_fail, begin=loop, end=loop)
+        self.flash_hle = None                           # SRAM address of flash_write, once hooked
+        self.flash.on_first_use = self.hook_flash_write
         self.idle_regs = RegReader(uc, IDLE_REGS)
         self.lr_reg = RegReader(uc, [UC_ARM_REG_LR])
         self._find_rand()
@@ -929,6 +1095,145 @@ class Emulator:
         uc.reg_write(UC_ARM_REG_LR, pc + 4)
         uc.reg_write(UC_ARM_REG_PC, IRQ_VECTOR)
         self.irqs += 1
+
+    def _infrared(self):
+        self.infrared_used = True
+        self.periph.on_infrared = None
+        self.uc.emu_stop()                              # run() switches the page or stops
+
+    def uart_to_ram(self):
+        """Make the infrared port plain memory (fast "idle, nothing received")."""
+        if self.uart_is_ram:
+            return
+        regs = self.periph.regs
+        self.uc.mem_unmap(*UART_PAGE)
+        self.uc.mem_map(*UART_PAGE, UC_PROT_ALL)
+        for off in range(0, 0x40, 4):
+            if off not in UART_IR_REGS:
+                val = regs.get(UART_PAGE[0] + off, 0)
+                self.uc.mem_write(UART_PAGE[0] + off, struct.pack('<I', val & 0xFFFFFFFF))
+        self.uart_is_ram = True
+        self.periph.on_infrared = None
+
+    def _finish_spin(self, pc):
+        """If the CPU stopped inside a delay loop, finish the loop in one step."""
+        if pc in self.spin_pcs:
+            n = self.uc.reg_read(UC_ARM_REG_R3)
+            if n > 1:                                   # leave one pass to run
+                self.uc.reg_write(UC_ARM_REG_R3, 1)
+                self.spin_skipped += (n - 1) * SPIN_LOOP_INSNS
+
+    def _ble_fail(self, uc, addr, size, _):
+        self.ble_failed = True
+        uc.emu_stop()
+
+    def _hook_spi2_transfer(self):
+        off = self.image.find(SPI2_XFER_SIG, 0, 0x220000)
+        if off < 0:
+            return
+        self.spi2_args = RegReader(self.uc, [UC_ARM_REG_R1, UC_ARM_REG_R2, UC_ARM_REG_R3,
+                                             UC_ARM_REG_SP, UC_ARM_REG_LR])
+        self.uc.hook_add(UC_HOOK_CODE, self._spi2_transfer, begin=FLASH_BASE + off,
+                         end=FLASH_BASE + off)
+
+    def _spi2_transfer(self, uc, addr, size, _):
+        if not self.bluetooth_used:
+            # nothing in normal play touches this bus: the game is starting
+            # Bluetooth (phone app, camera, connection). Stop so the window
+            # can undo the button press that led here (see run()).
+            self.bluetooth_used = True
+            if self.stop_on_bluetooth:
+                uc.emu_stop()
+                return
+        tx, txlen, rx, sp, lr = struct.unpack('<5Q', self.spi2_args.read())
+        rxlen = min(struct.unpack('<I', bytes(uc.mem_read(sp, 4)))[0], txlen)
+        if rx and rxlen:
+            uc.mem_write(rx, bytes([SPI2_IDLE]) * rxlen)   # no chip: every byte reads idle
+        uc.reg_write(UC_ARM_REG_R0, 0)
+        uc.reg_write(UC_ARM_REG_PC, lr)
+
+    def hook_flash_write(self):
+        """Run the firmware's flash_write in Python (see FLASH_WRITE_SIG).
+
+        The routine lives in SRAM, which the boot code fills, so this is
+        called on the first flash command (and after loading a snapshot).
+        """
+        if self.flash_hle is not None:
+            return
+        off = bytes(self.uc.mem_read(SRAM_BASE, SRAM_SIZE)).find(FLASH_WRITE_SIG)
+        if off < 0:
+            self.flash_hle = 0                          # not there (yet): leave it emulated
+            return
+        self.flash_hle = SRAM_BASE + off
+        self.flash_args = RegReader(self.uc, [UC_ARM_REG_R0, UC_ARM_REG_R1,
+                                              UC_ARM_REG_R2, UC_ARM_REG_LR])
+        self.uc.hook_add(UC_HOOK_CODE, self._flash_write, begin=self.flash_hle,
+                         end=self.flash_hle)
+        self._hook_save_loop()
+
+    def _hook_save_loop(self):
+        """Do the game's halfword save loop in one step (see SAVE_LOOP_RE).
+
+        write_halfword only accepts (dst & mask) + offset <= limit; those
+        three constants are read from its literal pool, and the loop is only
+        taken over when the whole copy passes, else the firmware runs it.
+        """
+        sram = bytes(self.uc.mem_read(SRAM_BASE, SRAM_SIZE))
+        m = re.search(SAVE_LOOP_RE, sram, re.S)
+        if not m:
+            return
+        loop = SRAM_BASE + m.start()
+        bl = loop + 0x10
+        hi, lo = struct.unpack('<HH', m.group(1))
+        if hi >> 11 != 0b11110 or lo >> 11 != 0b11111:
+            return
+        rel = (hi & 0x7FF) << 12 | (lo & 0x7FF) << 1
+        func = bl + 4 + (rel - (1 << 23) if rel & (1 << 22) else rel)
+        consts = []
+        for pc in range(func, func + 24, 2):              # its first ldr rN,[pc,#imm]s
+            ins = struct.unpack('<H', bytes(self.uc.mem_read(pc, 2)))[0]
+            if ins >> 11 == 0b01001:
+                lit = ((pc + 4) & ~3) + (ins & 0xFF) * 4
+                consts.append(struct.unpack('<I', bytes(self.uc.mem_read(lit, 4)))[0])
+        if len(consts) < 3:
+            return
+        self.save_check = consts[:3]
+        self.save_loop = loop
+        self.save_args = RegReader(self.uc, [arm_const.UC_ARM_REG_R8, arm_const.UC_ARM_REG_R9,
+                                             arm_const.UC_ARM_REG_R11])
+        self.uc.hook_add(UC_HOOK_CODE, self._save_loop, begin=loop, end=loop)
+
+    def _save_loop(self, uc, addr, size, _):
+        dst, count, src = struct.unpack('<3Q', self.save_args.read())
+        mask, offset, limit = self.save_check
+        allowed = lambda a: ((a & mask) + offset) & 0xFFFFFFFF <= limit
+        if not count or dst & 1 or not (allowed(dst) and allowed(dst + 2 * (count - 1))):
+            return                                      # let the firmware do (and reject) it
+        n = 2 * count
+        off = (dst & 0xFFFFFF) % SpiFlash.SIZE
+        if off + n > SpiFlash.SIZE:
+            return
+        data = int.from_bytes(uc.mem_read(src, n), 'little')
+        old = int.from_bytes(uc.mem_read(FLASH_BASE + off, n), 'little')
+        uc.mem_write(FLASH_BASE + off, (old & data).to_bytes(n, 'little'))    # NOR: 1 -> 0 only
+        self.flash.writes += count
+        for reg, val in ((UC_ARM_REG_R0, 0), (arm_const.UC_ARM_REG_R4, dst + n),
+                         (arm_const.UC_ARM_REG_R5, count), (arm_const.UC_ARM_REG_R6, 0),
+                         (arm_const.UC_ARM_REG_R7, (src - dst) & 0xFFFFFFFF)):
+            uc.reg_write(reg, val)
+        uc.reg_write(UC_ARM_REG_PC, (self.save_loop + SAVE_LOOP_EXIT) | 1)   # Thumb
+
+    def _flash_write(self, uc, addr, size, _):
+        cpu_addr, buf, n, lr = struct.unpack('<4Q', self.flash_args.read())
+        if n:
+            off = (cpu_addr & 0xFFFFFF) % SpiFlash.SIZE
+            n = min(n, SpiFlash.SIZE - off)
+            data = int.from_bytes(uc.mem_read(buf, n), 'little')
+            old = int.from_bytes(uc.mem_read(FLASH_BASE + off, n), 'little')
+            uc.mem_write(FLASH_BASE + off, (old & data).to_bytes(n, 'little'))   # NOR: 1 -> 0 only
+            self.flash.writes += 1
+        uc.reg_write(UC_ARM_REG_R0, 0)                  # success
+        uc.reg_write(UC_ARM_REG_PC, lr)                 # return; bit 0 selects Thumb, like bx lr
 
     def _find_rand(self):
         """Hook rand() once to learn where its state lives (see _idle_state)."""
@@ -1008,6 +1313,8 @@ class Emulator:
                 uc.emu_start(pc | (1 if thumb else 0), 0xFFFFFFFF, count=IDLE_PROBE)
             finally:
                 uc.hook_del(h)
+            if (self.bluetooth_used or self.infrared_used) and self.stop_on_bluetooth:
+                return False
             if not hits[1]:                             # no repeat within the probe
                 self.executed += IDLE_PROBE
                 return False
@@ -1035,7 +1342,12 @@ class Emulator:
         probe_wait = 0
         chunk = CHUNK
         while self.executed < max_insns:
-            self.periph.advance(self.executed / CPU_HZ)
+            now = self.executed / CPU_HZ
+            self.periph.advance(now)
+            if self.never_sleep and self.idle_counter and now - self.idle_reset_at >= 1.0:
+                # the counter only rises once a second, so this keeps it at 0-1
+                self.uc.mem_write(self.idle_counter, b'\0')
+                self.idle_reset_at = now
             if self.periph.irq_wanted() and not uc.reg_read(UC_ARM_REG_CPSR) & 0x80:
                 self.enter_irq()
             pc = uc.reg_read(UC_ARM_REG_PC)
@@ -1048,10 +1360,20 @@ class Emulator:
                 print('[X] CPU exception %s at pc=%08X lr=%08X'
                       % (e, pc, uc.reg_read(UC_ARM_REG_LR)))
                 return 'crash'
-            self.executed += chunk
+            self._finish_spin(uc.reg_read(UC_ARM_REG_PC))
+            self.executed += chunk + self.spin_skipped
+            self.spin_skipped = 0
             chunk = CHUNK
             if self.periph.powered_off:
                 return 'poweroff'
+            if self.ble_failed:
+                return 'ble_fail'
+            if self.bluetooth_used and self.stop_on_bluetooth:
+                return 'bluetooth'
+            if self.infrared_used and not self.uart_is_ram:
+                if self.stop_on_bluetooth:
+                    return 'infrared'
+                self.uart_to_ram()
             if self.idle_skip and self.executed < max_insns:
                 if probe_wait:
                     probe_wait -= 1
@@ -1137,12 +1459,29 @@ def power_cycle(emu, limit):
         return emu
     print('[pwr] asleep at %.3f s, %s wakes it after %.1f game seconds'
           % (now, reason, dt * p.turbo))
+    return cold_boot(emu, dt)
+
+
+def restart(emu):
+    """Restart the toy now, like taking the batteries out and back in.
+
+    Flash (the game's own save) and the clock are kept; everything the game
+    had not saved yet is lost, and it comes back on the CONTINUE screen.
+    """
+    return cold_boot(emu, 0.0)
+
+
+def cold_boot(emu, dt):
+    """A fresh Emulator booting from emu's flash, dt seconds later."""
+    p = emu.periph
+    now = emu.executed / CPU_HZ
     flash = bytes(emu.uc.mem_read(FLASH_BASE, SpiFlash.SIZE))
     new = Emulator(flash, p.trace)
     new.image = emu.image
     new.executed = emu.executed + int(dt * CPU_HZ)
     new.irqs, new.log = emu.irqs, emu.log
     new.idle_skip, new.idle_skipped = emu.idle_skip, emu.idle_skipped
+    new.never_sleep, new.stop_on_bluetooth = emu.never_sleep, emu.stop_on_bluetooth
     new.flash.writes = emu.flash.writes
     q = new.periph
     q.now = new.executed / CPU_HZ
@@ -1178,36 +1517,69 @@ def _snap_objects(emu):
             'rtc_irq': p.rtc_irq, 'flash': emu.flash}
 
 
-def save_snapshot(emu, path):
-    """Freeze the whole machine (CPU, memory, peripherals) to a file.
+class SaveMismatch(Exception):
+    """A save or snapshot that belongs to a different ROM version."""
 
-    Snapshots are Python pickles: only load ones you made yourself.
+
+def capture_snapshot(emu):
+    """The whole machine (CPU, memory, peripherals) as a dict of plain data.
+
+    Takes ~20 ms; write_snapshot() does the slow part and can run in a
+    background thread (zlib releases the GIL while compressing).
     """
-    import gzip
-    import pickle
+    import time
     state = {
         'cpu': emu.uc.context_save(),
         'ram': bytes(emu.uc.mem_read(FLASH_BASE, RAM_SIZE)),
         'sram': bytes(emu.uc.mem_read(SRAM_BASE, SRAM_SIZE)),
         'gpio': bytes(emu.uc.mem_read(*GPIO_PAGE)),
+        'uart': bytes(emu.uc.mem_read(*UART_PAGE)) if emu.uart_is_ram else None,
         'executed': emu.executed,
         'irqs': emu.irqs,
         'timers': [(t.start, t.periods_seen, t.pending) for t in emu.periph.timers],
         'code_check': emu.image[:CODE_CHECK_LEN],
+        'saved_at': time.time(),
     }
+    import copy
     for name, obj in _snap_objects(emu).items():
-        state[name] = {f: getattr(obj, f) for f in SNAP_FIELDS[name]}
-    with gzip.open(path, 'wb', compresslevel=3) as f:
+        # copied, not referenced: the machine keeps changing these (the screen,
+        # register tables) while the snapshot is written or held for a rewind
+        state[name] = {f: copy.deepcopy(getattr(obj, f)) for f in SNAP_FIELDS[name]}
+    return state
+
+
+def write_snapshot(state, path):
+    """Write a captured snapshot; the file is replaced only once complete."""
+    import gzip
+    import os
+    import pickle
+    tmp = path + '.tmp'
+    with gzip.open(tmp, 'wb', compresslevel=3) as f:
         pickle.dump(state, f)
+    os.replace(tmp, path)
+
+
+def save_snapshot(emu, path):
+    """Freeze the whole machine to a file.
+
+    Snapshots are Python pickles: only load ones you made yourself.
+    """
+    write_snapshot(capture_snapshot(emu), path)
 
 
 def load_snapshot(emu, path):
+    """Restore a snapshot file into a fresh Emulator; returns the snapshot's data."""
     import gzip
     import pickle
     with gzip.open(path, 'rb') as f:
         state = pickle.load(f)
     if state['code_check'] != emu.image[:CODE_CHECK_LEN]:
-        sys.exit('snapshot %s belongs to a different ROM version' % path)
+        raise SaveMismatch('snapshot %s belongs to a different ROM version' % path)
+    return restore_snapshot(emu, state)
+
+
+def restore_snapshot(emu, state):
+    """Restore a captured snapshot (see capture_snapshot) into a fresh Emulator."""
     emu.uc.context_restore(state['cpu'])
     emu.uc.mem_write(FLASH_BASE, state['ram'])
     emu.uc.mem_write(SRAM_BASE, state['sram'])
@@ -1221,16 +1593,31 @@ def load_snapshot(emu, path):
         for f, v in state.get(name, {}).items():
             setattr(obj, f, v)
     p = emu.periph
-    if 'gpio' in state:
-        emu.uc.mem_write(GPIO_PAGE[0], state['gpio'])
-    else:                                               # older snapshot: GPIO was MMIO
-        for addr, val in p.regs.items():
-            if GPIO_PAGE[0] <= addr < GPIO_PAGE[0] + GPIO_PAGE[1]:
-                emu.uc.mem_write(addr, struct.pack('<I', val & 0xFFFFFFFF))
+    if state.get('uart') is not None:                   # infrared was in use
+        emu.uart_to_ram()
+        emu.uc.mem_write(UART_PAGE[0], state['uart'])
+    for name, (base, size) in PLAIN_PAGES.items():
+        if name in state:
+            emu.uc.mem_write(base, state[name])
+        else:                                           # older snapshot: the page was MMIO
+            for addr, val in p.regs.items():
+                if base <= addr < base + size:
+                    emu.uc.mem_write(addr, struct.pack('<I', val & 0xFFFFFFFF))
     if 'game_time' not in state['periph']:              # older snapshot
         p.game_time = p.now
     if 'rtc_irq' not in state:
         p.rtc_irq.fired = {bit: int(p.game_time / per) for bit, per in RTC_PERIODIC.items()}
+    emu.hook_flash_write()                              # SRAM code is already in place
+    return state
+
+
+def save_matches(path, image):
+    """True if the flash save at path exists and belongs to this ROM."""
+    import os
+    if not os.path.exists(path) or os.path.getsize(path) != len(image):
+        return False
+    with open(path, 'rb') as f:
+        return f.read(CODE_CHECK_LEN) == image[:CODE_CHECK_LEN]
 
 
 def load_save(path, image):
@@ -1240,40 +1627,65 @@ def load_save(path, image):
         return None
     flash = open(path, 'rb').read()
     if len(flash) != len(image) or flash[:CODE_CHECK_LEN] != image[:CODE_CHECK_LEN]:
-        sys.exit('save file %s belongs to a different ROM version' % path)
+        raise SaveMismatch('save file %s belongs to a different ROM version' % path)
     return flash
 
 
-def restore_rtc(emu, path):
-    """Carry the RTC over from the last session, adding the real time since."""
+def read_save_meta(path):
+    """The clock and flags stored next to a flash save (FILE.json), or None."""
     import json
     import os
-    import time
     meta = path + '.json'
     if not os.path.exists(meta):
+        return None
+    with open(meta) as f:
+        return json.load(f)
+
+
+def restore_rtc(emu, path, advance=True):
+    """Carry the RTC over from the last session.
+
+    With advance, the real time since the save is added, as on the real toy,
+    whose clock keeps running while it's off; without it the clock carries
+    on from where it stopped.
+    """
+    import time
+    state = read_save_meta(path)
+    if state is None:
         return False
-    state = json.load(open(meta))
     rtc = emu.periph.rtc
     rtc.regs = {int(k): v for k, v in state['rtc_regs'].items()}
-    elapsed = max(0.0, time.time() - state['saved_at'])
+    elapsed = max(0.0, time.time() - state['saved_at']) if advance else 0.0
     rtc.base_ticks = state['rtc_ticks'] + int(elapsed * 32768)
     return True
 
 
-def write_save(emu, path):
+def write_save(emu, path, **flags):
+    """Write the flash and clock; extra keyword flags go into FILE.json."""
+    write_save_data(bytes(emu.uc.mem_read(FLASH_BASE, SpiFlash.SIZE)),
+                    save_meta(emu, **flags), path)
+
+
+def save_meta(emu, **flags):
+    import time
+    state = {'rtc_ticks': emu.periph.rtc.ticks(),
+             'rtc_regs': emu.periph.rtc.regs,
+             'saved_at': time.time()}
+    state.update(flags)
+    return state
+
+
+def write_save_data(flash, meta, path):
+    """The file-writing half of write_save, safe to run in a background thread."""
     import json
     import os
-    import time
-    flash = bytes(emu.uc.mem_read(FLASH_BASE, SpiFlash.SIZE))
     tmp = path + '.tmp'
     with open(tmp, 'wb') as f:
         f.write(flash)
     os.replace(tmp, path)
-    state = {'rtc_ticks': emu.periph.rtc.ticks(),
-             'rtc_regs': emu.periph.rtc.regs,
-             'saved_at': time.time()}
-    with open(path + '.json', 'w') as f:
-        json.dump(state, f, indent=1)
+    with open(path + '.json.tmp', 'w') as f:
+        json.dump(meta, f, indent=1)
+    os.replace(path + '.json.tmp', path + '.json')
 
 
 def main():
@@ -1296,6 +1708,8 @@ def main():
     ap.add_argument('--save', metavar='FILE',
                     help='persistent flash image (+ FILE.json for the clock); '
                          'boots from it if present and writes it back on exit')
+    ap.add_argument('--never-sleep', action='store_true',
+                    help='keep the device awake by resetting the firmware idle counter')
     ap.add_argument('--no-idle-skip', action='store_true',
                     help='always execute idle loops instead of skipping them')
     ap.add_argument('--turbo', type=float, default=1.0,
@@ -1308,6 +1722,13 @@ def main():
                     help='write the buzzer sound of this run to a WAV file '
                          '(silences over %g s, e.g. sleep, are shortened)' % SOUND_MAX_GAP)
     a = ap.parse_args()
+    try:
+        run_cli(a)
+    except SaveMismatch as e:
+        sys.exit(str(e))
+
+
+def run_cli(a):
     image = open(a.image, 'rb').read()
     if image[:4] != b'SPII':
         sys.exit('not a tg18 SPI image (missing SPII header)')
@@ -1323,6 +1744,7 @@ def main():
         print('resumed snapshot %s at %.3f s' % (a.snapshot_in, emu.executed / CPU_HZ))
     emu.periph.turbo = a.turbo
     emu.idle_skip = not a.no_idle_skip
+    emu.never_sleep = a.never_sleep
     t0 = emu.executed / CPU_HZ
     for spec in a.press:
         t, keys = spec.split(':')
