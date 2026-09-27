@@ -38,11 +38,16 @@ IDLE_REGS = [getattr(arm_const, 'UC_ARM_REG_R%d' % i) for i in range(13)] + [
 IRQ_VECTOR = 0x200003C4       # target of the IRQ entry in the vector table
 
 CHUNK = 20_000                # instructions per run slice (~0.2 ms emulated)
-IDLE_PROBE = 4_000            # max instructions for one idle-loop pass
+IDLE_PROBE = 10_000           # max instructions for one idle-loop pass
 IDLE_BACKOFF = 3              # slices to wait after a failed idle probe
 IDLE_PASSES = 3               # loop passes tried before giving up on a probe
 IDLE_SLICE = 1_500            # short slice after a skip: let the ISR run, re-probe
 IDLE_SRAM_CHECK = 0x20000     # .data/.bss/stacks live in the first 128 KiB
+# newlib rand(): the 64-bit LCG step after __getreent(), from `ldr lr,[r0,#0xa8]`
+# to `str r3,[r0,#0xac]`; found once in each of the nine known images
+RAND_SIG = bytes.fromhex('a8e090e5910e03e02cc09fe5ac1090e59c3121e0'
+                         '9e2c83e0012092e2033081e00030a3e2a82080e5ac3080e5')
+RAND_STATE_OFF = 0xA8         # state offset in the reent struct
 STUCK_SLICES = 10_000         # ~2 s in one 256-byte window with no flash/LCD progress = stuck
 
 # Registers whose reads must not simply echo the last write. Each entry is
@@ -417,6 +422,108 @@ class Timer:
                 self.pending = True
 
 
+SOUND_TIMER = 4              # timer 4 in PWM mode drives the buzzer
+SOUND_MAX_GAP = 2.0           # --wav shortens silences longer than this (sleep)
+
+
+class Sound:
+    """The buzzer: timer 4 produces a square wave (driver at 2000A83C).
+
+    ctrl bit13 runs it; +0x08 reload = -(period) and +0x0C = -(high time),
+    in the same 12 MHz ticks as the other timers. The boot jingle plays
+    D6 E6 F6 G6 this way, one reprogramming per note.
+    """
+
+    def __init__(self, periph):
+        self.p = periph
+        self.state = (0.0, 0.5)                  # (frequency Hz, duty); 0 Hz = off
+        self.events = []                         # (emulated time, freq, duty)
+
+    def update(self):
+        t = self.p.timers[SOUND_TIMER]
+        if t.ctrl & 0x2000:
+            period = t._period()
+            high = 0x10000 - (self.p.regs.get(t.base + 0x0C, 0) & 0xFFFF)
+            state = (t._rate() / period, min(max(high / period, 0.05), 0.95))
+        else:
+            state = (0.0, 0.5)
+        if state != self.state:
+            self.state = state
+            self.events.append((self.p.now, state[0], state[1]))
+
+
+class ToneSynth:
+    """Turns buzzer events into 16-bit mono samples, keeping the phase smooth."""
+
+    def __init__(self, rate=44100, volume=0.5):
+        self.rate = rate
+        self.amp = int(12000 * volume)
+        self.freq, self.duty = 0.0, 0.5
+        self.phase = 0.0
+
+    def tone(self, n, out):
+        """Append n samples of the current tone to the array out."""
+        if not self.freq or not self.amp or self.freq >= self.rate / 2:   # off or inaudible
+            out.extend([0] * n)
+            return
+        # each sample is the average of the square wave over the sample's
+        # time, not a point sample: this removes most of the aliasing that
+        # otherwise adds off-key overtones to high notes
+        step = self.freq / self.rate
+        ph, duty, amp = self.phase, self.duty, self.amp
+        scale = 2 * amp / step
+        for _ in range(n):
+            end = ph + step
+            high = max(0.0, min(end, duty) - ph) + max(0.0, min(end, 1.0 + duty) - max(ph, 1.0))
+            out.append(int(high * scale) - amp)
+            ph = end - 1.0 if end >= 1.0 else end
+        self.phase = ph
+
+    def render(self, events, t0, t1, n, out):
+        """Append n samples covering emulated time t0..t1 to out.
+
+        events are this span's (time, freq, duty) changes in order. When n
+        doesn't match the span's length, the span is stretched to fit, so
+        slow emulation plays in slow motion at the right pitch.
+        """
+        span = t1 - t0
+        done = 0
+        for t, freq, duty in events:
+            upto = n if span <= 0 else min(n, round((t - t0) / span * n))
+            if upto > done:
+                self.tone(upto - done, out)
+                done = upto
+            self.freq, self.duty = freq, duty
+        self.tone(n - done, out)
+
+
+def write_wav(path, events, t0, t1, rate=44100):
+    """Render buzzer events to a WAV file, with long silences shortened."""
+    import array
+    import wave
+    synth = ToneSynth(rate)
+    out = array.array('h')
+    edges = [t for t, _, _ in events if t0 < t < t1] + [t1]
+    pending = [e for e in events if t0 < e[0] < t1]
+    for e in events:                         # state already in effect at t0
+        if e[0] <= t0:
+            synth.freq, synth.duty = e[1], e[2]
+    t = t0
+    for edge in edges:
+        span = edge - t
+        if not synth.freq:
+            span = min(span, SOUND_MAX_GAP)
+        synth.render([], t, edge, round(span * rate), out)
+        while pending and pending[0][0] <= edge:
+            _, synth.freq, synth.duty = pending.pop(0)
+        t = edge
+    with wave.open(path, 'wb') as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(out.tobytes())
+
+
 class SpiFlash:
     """Generic 8 MiB SPI NOR flash (Winbond W25Q64-style command set).
 
@@ -521,7 +628,8 @@ class Peripherals:
         self.rtc = Rtc(self)
         self.adc = Adc(self)
         self.rtc_irq = RtcIrq(self)
-        self.turbo = 1.0                        # game clock speed-up
+        self.sound = Sound(self)
+        self.turbo = 1.0                       # game clock speed-up
         self.game_time = 0.0                    # RTC seconds elapsed, scaled
         self.powered_off = False
         self.reads = dict(READ_QUIRKS)
@@ -532,11 +640,15 @@ class Peripherals:
         self.writes[RTC_BUS + 0x0C] = lambda p, v: p.rtc.command(v)
         self.held = set()                       # pins currently pressed
         self.key_script = []                    # (time, key) presses
+        self.live_keys = set()                  # keys held down right now (window)
         self.gpio_applied = [0] * 8             # button bits currently in RAM
         self.mmio_writes = 0
         for t in self.timers:
             self.reads[t.base] = lambda p, old, t=t: t.read_ctrl(old)
             self.reads[t.base + 0x10] = lambda p, old, t=t: t.counter()
+        buzzer = self.timers[SOUND_TIMER].base
+        for off in (0x08, 0x0C):                # pitch or duty changed
+            self.writes[buzzer + off] = lambda p, v: p.sound.update()
 
     def sysclk(self):
         """Timer input clock, from the firmware's own clock variable."""
@@ -573,6 +685,7 @@ class Peripherals:
         self.rtc_irq.advance()
         self.held = {KEY_PINS[k] for t, k in self.key_script
                      if t <= now < t + KEY_HOLD}
+        self.held |= {KEY_PINS[k] for k in self.live_keys}
         self.sync_gpio()
 
     def next_event(self):
@@ -653,6 +766,8 @@ class Peripherals:
             timer = self._timer_ctrl(word)
             if timer:
                 timer.write_ctrl(new, old)
+                if timer is self.timers[SOUND_TIMER]:
+                    self.sound.update()
                 return
             if word == LCD_BASE + 0x18C:
                 self.lcd.write_status(new, old)
@@ -708,6 +823,32 @@ def c_printf(uc, fmt, args):
     return re.sub(r'%([-0 +#]*)(\d*)(?:l|h|hh|ll)?([diuxXpsc%])', sub, fmt)
 
 
+class RegReader:
+    """Reads a fixed set of registers with one direct call into Unicorn's C API.
+
+    Unicorn's Python reg_read_batch rebuilds its ctypes arrays on every call
+    (~35 us); idle detection reads the registers tens of thousands of times a
+    second, so the arrays are built once here. Returns the values as bytes.
+    """
+
+    def __init__(self, uc, regs):
+        import ctypes
+        from unicorn.unicorn_py3.unicorn import uclib
+        n = len(regs)
+        self.call = uclib.uc_reg_read_batch
+        self.handle = uc._uch
+        self.ids = (ctypes.c_int * n)(*regs)
+        self.vals = (ctypes.c_uint64 * n)()             # 32-bit registers, upper half stays 0
+        base = ctypes.addressof(self.vals)
+        self.ptrs = (ctypes.c_void_p * n)(*(base + 8 * i for i in range(n)))
+        self.n = n
+
+    def read(self):
+        if self.call(self.handle, self.ids, self.ptrs, self.n):
+            raise UcError(self.call(self.handle, self.ids, self.ptrs, self.n))
+        return bytes(self.vals)
+
+
 class Emulator:
     def __init__(self, image, trace_mmio=False, start_time=None):
         self.image = image
@@ -742,6 +883,11 @@ class Emulator:
         self.idle_skip = True
         self.idle_skipped = 0
         self.pc_hist = collections.Counter()
+        self.rand_state = None                          # SRAM offset of rand()'s 64-bit state
+        self.idle_anchor = None                         # PC where the last idle skip succeeded
+        self.idle_regs = RegReader(uc, IDLE_REGS)
+        self.lr_reg = RegReader(uc, [UC_ARM_REG_LR])
+        self._find_rand()
 
     def _find_printf(self):
         """printf is a stub `push {r0-r3}; add sp,#0x10; bx lr` in release builds."""
@@ -784,37 +930,85 @@ class Emulator:
         uc.reg_write(UC_ARM_REG_PC, IRQ_VECTOR)
         self.irqs += 1
 
+    def _find_rand(self):
+        """Hook rand() once to learn where its state lives (see _idle_state)."""
+        off = self.image.find(RAND_SIG, 0, 0x200000)
+        if off < 0:
+            return
+        def got_state(uc, addr, size, _):             # r0 = reent struct, after __getreent()
+            self.rand_state = uc.reg_read(UC_ARM_REG_R0) + RAND_STATE_OFF - SRAM_BASE
+            uc.hook_del(self._rand_hook)
+        pc = FLASH_BASE + off                           # first instruction of the signature
+        self._rand_hook = self.uc.hook_add(UC_HOOK_CODE, got_state, begin=pc, end=pc)
+
     def _idle_state(self):
         uc = self.uc
-        regs = tuple(uc.reg_read_batch(IDLE_REGS))
-        ram = bytes(uc.mem_read(SRAM_BASE, IDLE_SRAM_CHECK))   # compared with memcmp
-        return regs, ram, self.periph.mmio_writes
+        regs = self.idle_regs.read()
+        ram = uc.mem_read(SRAM_BASE, IDLE_SRAM_CHECK)             # compared with memcmp
+        r = self.rand_state
+        if r is not None and 0 <= r <= IDLE_SRAM_CHECK - 8:
+            ram[r:r + 8] = bytes(8)
+        return regs, bytes(ram), self.periph.mmio_writes
+
+    def _run_to(self, addr):
+        """Run until the CPU reaches addr; False if not within IDLE_PROBE."""
+        uc = self.uc
+        reached = [False]
+        def at(uc, a, size, _):
+            reached[0] = True
+            uc.emu_stop()
+        pc = uc.reg_read(UC_ARM_REG_PC)
+        thumb = uc.reg_read(UC_ARM_REG_CPSR) & 0x20
+        h = uc.hook_add(UC_HOOK_CODE, at, begin=addr, end=addr)
+        try:
+            uc.emu_start(pc | (1 if thumb else 0), 0xFFFFFFFF, count=IDLE_PROBE)
+        finally:
+            uc.hook_del(h)
+        return reached[0]
 
     def try_idle_skip(self, max_insns):
         """Skip ahead to the next event if the CPU is provably spinning.
 
-        Runs one more pass of whatever loop the CPU is in (until it is back at
-        the same PC). If registers, internal RAM and MMIO writes are unchanged,
-        every further pass is identical, and nothing can change until the next
-        interrupt or button event, so emulated time jumps straight there.
-        Returns True if time was skipped.
+        Runs the loop the CPU is in until it is back at the same PC with the
+        same registers (the PC may be inside a helper called several times
+        per pass, so that can take a few hits). If internal RAM and MMIO
+        writes are unchanged too, every further pass is identical, and nothing
+        can change until the next interrupt or button event, so emulated time
+        jumps straight there. rand()'s state is left out of the comparison:
+        the main loop calls rand() every pass and throws the result away, only
+        to stir the sequence. Returns True if time was skipped.
         """
         uc = self.uc
+        anchor = self.idle_anchor
+        if anchor is not None and uc.reg_read(UC_ARM_REG_PC) != anchor:
+            # measure from where the last skip succeeded: usually the loop
+            # itself, passed once per pass, rather than a helper inside it
+            if not self._run_to(anchor):
+                self.idle_anchor = None
+                self.executed += IDLE_PROBE
+                return False
         pc = uc.reg_read(UC_ARM_REG_PC)
         thumb = uc.reg_read(UC_ARM_REG_CPSR) & 0x20
         before = self._idle_state()
         for _ in range(IDLE_PASSES):
-            hits = [0]
+            want = before[0]
+            i = IDLE_REGS.index(arm_const.UC_ARM_REG_LR) * 8
+            want_lr = want[i:i + 8]
+            hits = [0, False]
+            read_lr, read_regs = self.lr_reg.read, self.idle_regs.read
             def at_pc(uc, addr, size, _):
                 hits[0] += 1
-                if hits[0] == 2:
+                # the return address alone rules out most calls of a helper
+                # from other places, and is cheaper to read than all registers
+                if hits[0] > 1 and read_lr() == want_lr and read_regs() == want:
+                    hits[1] = True
                     uc.emu_stop()
             h = uc.hook_add(UC_HOOK_CODE, at_pc, begin=pc, end=pc)
             try:
                 uc.emu_start(pc | (1 if thumb else 0), 0xFFFFFFFF, count=IDLE_PROBE)
             finally:
                 uc.hook_del(h)
-            if hits[0] < 2:                             # no loop within the probe
+            if not hits[1]:                             # no repeat within the probe
                 self.executed += IDLE_PROBE
                 return False
             after = self._idle_state()
@@ -825,6 +1019,7 @@ class Emulator:
             before = after
         else:
             return False
+        self.idle_anchor = pc
         target = int(self.periph.next_event() * CPU_HZ) + 1
         target = min(target, max_insns)
         if target <= self.executed:
@@ -952,7 +1147,10 @@ def power_cycle(emu, limit):
     q = new.periph
     q.now = new.executed / CPU_HZ
     q.game_time = p.game_time + dt * p.turbo
-    q.turbo, q.key_script = p.turbo, p.key_script
+    q.turbo, q.key_script, q.live_keys = p.turbo, p.key_script, p.live_keys
+    q.sound.events = p.sound.events
+    if p.sound.state[0]:                                  # power cut stops the buzzer
+        p.sound.events.append((now, 0.0, 0.5))
     q.rtc, q.rtc.p = p.rtc, q
     q.rtc_irq.fired = {bit: int(q.game_time / per) for bit, per in RTC_PERIODIC.items()}
     q.lcd.frames, q.lcd.on_frame = p.lcd.frames, p.lcd.on_frame
@@ -1106,6 +1304,9 @@ def main():
                     help='resume from a snapshot made by --snapshot-out')
     ap.add_argument('--snapshot-out', metavar='FILE',
                     help='freeze the whole machine to FILE at the end of the run')
+    ap.add_argument('--wav', metavar='FILE',
+                    help='write the buzzer sound of this run to a WAV file '
+                         '(silences over %g s, e.g. sleep, are shortened)' % SOUND_MAX_GAP)
     a = ap.parse_args()
     image = open(a.image, 'rb').read()
     if image[:4] != b'SPII':
@@ -1169,6 +1370,10 @@ def main():
     if a.snapshot_out:
         save_snapshot(emu, a.snapshot_out)
         print('snapshot written to %s' % a.snapshot_out)
+    if a.wav:
+        events = emu.periph.sound.events
+        write_wav(a.wav, events, t0, emu.executed / CPU_HZ)
+        print('%d buzzer changes, sound written to %s' % (len(events), a.wav))
 
 
 if __name__ == '__main__':
