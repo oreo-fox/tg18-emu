@@ -7,9 +7,14 @@ built as a feasibility study. No firmware is included; you need your own
 Status: a playable prototype. All nine known dumps boot to the clock-setting
 screen. Wonder Garden (EN v063) and Magic (EN v058) have been played from setup
 (clock, birthday, name) to a hatched baby, with feeding, the menus, saves and
-deep sleep/wake working. A live window (`tg18win.py`) shows the screen, takes
-the A/B/C buttons, plays the buzzer sound and runs at real-time speed on
-normal screens, with a ROM menu, settings, autosave and save slots.
+deep sleep/wake working. Fairy (EN v057) has been played through a whole life
+cycle with scripted, fast-forwarded runs: egg, baby, child, teen and adult on
+the expected schedule, the TamaDepa shop, Game Corner, Tama Resort Hotel,
+friendship, marriage to an in-game character and the next generation's egg,
+as well as sickness, First Aid, the Grim Gotchi, death and the new egg after
+A+C. A live window (`tg18win.py`) shows the screen, takes the A/B/C buttons,
+plays the buzzer sound and runs at real-time speed on normal screens, with a
+ROM menu, settings, autosave and save slots.
 
 Not emulated yet:
 
@@ -183,7 +188,9 @@ true length and keeping 50-90 ms queued; `tg18emu.py --wav` writes it to a file.
 ### Firmware behaviour worth knowing
 
 * Buttons are debounced: a press makes its sound about 44 ms later, as on the
-  real toy.
+  real toy. A button must also be released for about 50 ms between presses.
+  The window holds even a very short tap for 50 ms (no longer), so fast
+  tapping in the mini games (8-10 taps a second) is counted in full.
 * The CONTINUE / RESET ALL menu after a battery change ignores buttons for about
   3 s after it appears.
 * Sleep: the backlight dims about 10 s after the last button press. After
@@ -242,6 +249,22 @@ true length and keeping 50-90 ms queued; `tg18emu.py --wav` writes it to a file.
 * While asleep the toy wakes on its RTC alarm about once a minute, updates the
   pet (hunger, happiness, age) and sleeps again; this is how time passes for
   the pet. Moving the clock forward alone doesn't age or feed it.
+* Life and death (EN Fairy, read from the firmware and confirmed by running
+  it). The pet's data starts at 0xF800D864. Once a game minute, day and
+  night, the game counts the minutes the hunger meter (+6) and the happiness
+  meter (+0x18) have been empty; feeding or a snack resets them. Each
+  sickness adds 1 to a count (+0x15). The Grim Gotchi appears when either
+  meter has been empty for 36 hours, or at the fifth sickness (the count is
+  then reset). First Aid in that hour sends the pet to the Tama Hospital and
+  saves it; otherwise the grave appears 60 minutes later (the firmware's
+  own timing, not the 15 minutes some guides give). A+C on the grave starts
+  a new egg; Gotchi Points are kept.
+* Marriage with an in-game character: meeting a resident (e.g. in the Tama
+  Hotel garden, who comes out is random) raises their friendship by 2, shown
+  as the bar on their Notebook card. A proposal needs a ring from the
+  TamaDepa (Heart Ring 500 G, Gem Ring 5000 G); a refused proposal uses up
+  the ring. A proposal at friendship 14 was accepted; the wedding is
+  followed by an egg that hatches at once.
 * The main loop calls newlib's rand() once per pass and discards the result,
   only to stir the sequence, so random events depend on when buttons are
   pressed. rand()'s 64-bit state lives in the reent struct (+0xA8), at

@@ -208,8 +208,8 @@ WRITE_HOOKS = {
     # second SPI master (driver at 20008938 in EN Magic), used by the camera
     # item: TX byte at +8, then it polls +0xC bits 0-2 up to 10000 times for
     # the byte to finish and reads the reply at +0x10. Nothing is emulated
-    # on this bus, so each byte completes at once and reads back 0xFF, as
-    # from an empty bus (without this, every byte timed out: 0.06x)
+    # on this bus, so each byte completes at once and reads back SPI2_IDLE
+    # (0x00, no chip); without this, every byte timed out: 0.06x
     SPI2_BASE + 8: lambda p, v: p.spi2_xfer(),
 }
 
@@ -804,6 +804,7 @@ class Peripherals:
         self.held = set()                       # pins currently pressed
         self.key_script = []                    # (time, key) presses
         self.live_keys = set()                  # keys held down right now (window)
+        self.hold_until = {}                    # key -> time a short tap stays held until
         self.on_infrared = None                 # called on the first infrared access
         self.gpio_applied = [0] * 8             # button bits currently in RAM
         self.mmio_writes = 0
@@ -858,6 +859,7 @@ class Peripherals:
         self.held = {KEY_PINS[k] for t, k in self.key_script
                      if t <= now < t + KEY_HOLD}
         self.held |= {KEY_PINS[k] for k in self.live_keys}
+        self.held |= {KEY_PINS[k] for k, t in self.hold_until.items() if now < t}
         self.sync_gpio()
 
     def next_event(self):
@@ -876,6 +878,7 @@ class Peripherals:
             times.append(now + (game_next - self.game_time) / self.turbo)
         for t, _ in self.key_script:
             times.extend(edge for edge in (t, t + KEY_HOLD) if edge > now)
+        times.extend(t for t in self.hold_until.values() if t > now)
         return min(times)
 
     def irq_lines(self):
@@ -1566,6 +1569,7 @@ def cold_boot(emu, dt):
     q.now = new.executed / CPU_HZ
     q.game_time = p.game_time + dt * p.turbo
     q.turbo, q.key_script, q.live_keys = p.turbo, p.key_script, p.live_keys
+    q.hold_until = p.hold_until
     q.sound.events = p.sound.events
     if p.sound.state[0]:                                  # power cut stops the buzzer
         p.sound.events.append((now, 0.0, 0.5))

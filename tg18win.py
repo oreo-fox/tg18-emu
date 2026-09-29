@@ -90,6 +90,7 @@ MAX_STEP = 0.02               # most emulated seconds per tick, so sound and win
 MAX_BEHIND = 0.25             # most emulated time (s) the window will catch up on
 REWIND_GAP = 1.0              # at most one undo snapshot per second of button presses
 MAX_CATCHUP = 10.0           # most the device clock may run ahead of the CPU when it lags
+MIN_HOLD = 0.05               # emulated seconds a quick tap is held (firmware debounce: 44 ms)
 KEYMAP = {'a': 'A', 'b': 'B', 'c': 'C', 'Left': 'A', 'Down': 'B', 'Right': 'C'}
 
 # RGB565 (as stored in the LCD framebuffer) -> 3 bytes of RGB
@@ -588,15 +589,18 @@ class Window:
         now_wall = time.perf_counter()
         if now_wall - self.rewind_at >= REWIND_GAP and not self.emu.periph.powered_off:
             # the state just before this press: if the press starts Bluetooth,
-            # the game is put back here (see bluetooth_blocked)
+            # the game is put back here (see connection_blocked)
             self.rewind_point, self.rewind_at = te.capture_snapshot(self.emu), now_wall
         p = self.emu.periph
         p.live_keys.add(key)
-        # also script a short press, so a quick tap is held long enough for
-        # the firmware to see it and so a press wakes the device from sleep
         now = self.emu.executed / te.CPU_HZ
-        p.key_script[:] = [(t, k) for t, k in p.key_script if t > now - 1.0]
-        p.key_script.append((now, key))
+        # a quick tap stays held for at least MIN_HOLD, long enough for the
+        # firmware's 44 ms debounce; no longer, or fast taps in the mini
+        # games (8 a second) run together into one long press
+        p.hold_until[key] = now + MIN_HOLD
+        if p.powered_off:                               # a scripted press wakes it from sleep
+            p.key_script[:] = [(t, k) for t, k in p.key_script if t > now - 1.0]
+            p.key_script.append((now, key))
         self.pad.itemconfigure(self.circles[key], fill=BUTTON_DOWN)
 
     def release(self, key):
