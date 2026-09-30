@@ -1,6 +1,7 @@
 """Settings, ROM folder and per-ROM saves for the tg18 window.
 
-Everything lives next to the scripts: settings.json, and saves/<rom name>/
+Everything lives in the project folder (one above prototype/): settings.json,
+and saves/<rom name>/
 with one folder per ROM:
 
   game.flash (+ .json)   the toy's own flash save and clock; written when the
@@ -22,7 +23,8 @@ import time
 
 import tg18emu as te
 
-APP_DIR = os.path.dirname(os.path.abspath(__file__))
+# the project folder, one above prototype/: saves and settings stay there
+APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SETTINGS_PATH = os.path.join(APP_DIR, 'settings.json')
 SAVES_DIR = os.path.join(APP_DIR, 'saves')
 SLOTS = 3

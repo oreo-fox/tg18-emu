@@ -1,0 +1,13 @@
+[workspace]
+members = ["core", "desktop"]
+resolver = "2"
+
+[profile.release]
+opt-level = 3
+debug = 1
+codegen-units = 1
+lto = "thin"
+
+# the emulator is slow without optimisation; keep tests and debug runs usable
+[profile.dev]
+opt-level = 2

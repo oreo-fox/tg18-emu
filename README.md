@@ -12,9 +12,18 @@ cycle with scripted, fast-forwarded runs: egg, baby, child, teen and adult on
 the expected schedule, the TamaDepa shop, Game Corner, Tama Resort Hotel,
 friendship, marriage to an in-game character and the next generation's egg,
 as well as sickness, First Aid, the Grim Gotchi, death and the new egg after
-A+C. A live window (`tg18win.py`) shows the screen, takes the A/B/C buttons,
-plays the buzzer sound and runs at real-time speed on normal screens, with a
-ROM menu, settings, autosave and save slots.
+A+C. A live window shows the screen, takes the A/B/C buttons, plays the
+buzzer sound and runs in real time, with a ROM menu, settings, autosave and
+save slots.
+
+There are two implementations:
+
+* **Rust** (`core/`, `desktop/`): the main version. Its own ARMv5TE
+  interpreter (no Unicorn), about 4x faster than the prototype in the room
+  with the pet (5x real time at full speed, ~25% of one core at real time).
+  Checked instruction by instruction against the prototype (see Testing).
+* **Python prototype** (`prototype/`): the original feasibility study on
+  Unicorn, kept for reference and as the yardstick for the Rust version.
 
 Not emulated yet:
 
@@ -37,17 +46,31 @@ The emulator code is released under the MIT License (see `LICENSE`).
 
 ## Usage
 
-    pip install -r requirements.txt
+### Building (Rust)
+
+Install Rust from https://rustup.rs (the GNU toolchain works without Visual
+Studio: `rustup-init -y --default-host x86_64-pc-windows-gnu`), then in the
+project folder:
+
+    cargo build --release
+
+This makes `target/release/tg18.exe` (the window), `tg18cli.exe` (scripted
+runs) and `lockstep.exe` (the CPU check). The window app is Windows-only for
+now (it uses the Windows API directly, no extra packages); the core has no
+platform code apart from reading the local time.
 
 ### Playing in a window
 
-    python tg18win.py
+    target
+elease	g18.exe            (or double-click it)
 
 The first time, it asks for the folder with your ROM dumps; after that it
-reopens the last ROM and continues where you left off. `python tg18win.py
-<flash.bin>` opens a specific dump. Uses only tkinter and ctypes, which come
-with Python. Sound plays through Windows' built-in winmm; on other systems the
-window runs silent.
+reopens the last ROM and continues where you left off. `tg18.exe <flash.bin>`
+opens a specific dump. Sound plays through Windows' built-in winmm.
+
+The prototype's window still works the same way (`pip install -r
+prototype/requirements.txt`, then `python prototype/tg18win.py`); both use the
+same `settings.json` and `saves/` folder.
 
 Press A, B and C with the `A` `B` `C` keys, the arrow keys (Left = A,
 Down = B, Right = C) or by clicking the buttons. Hold A and C together to
@@ -59,17 +82,24 @@ press both. `M` mutes, `Ctrl+S` saves.
   1, 2, 5 or 10 minutes), Never sleep (default on) and Pause time while
   closed (default off). Settings are kept in `settings.json`.
 
-Saves are kept per ROM in `saves/<rom name>/`:
+Saves are kept per ROM in `saves/<rom name>/` (in the project folder, next to
+`settings.json`; the Rust app uses the folder it was built in, or the one
+next to `tg18.exe` elsewhere):
 
 * `game.flash` (+ `.json`): the toy's own flash save and clock. When you
   close the window or switch ROMs, the device is put to sleep first, so the
   game saves itself exactly as the real toy does, and next time it wakes
   straight into the game.
-* `autosave.snap`: a snapshot of the whole machine, taken at the autosave
-  interval (compressed on a background thread, so play doesn't stutter). If
-  the window was not closed normally, the game resumes from here.
-* `slot1-3.snap`: manual save slots. Loading a slot autosaves the current game
-  first.
+* `autosave.t18s` (Rust) / `autosave.snap` (prototype): a snapshot of the
+  whole machine, taken at the autosave interval (written on a background
+  thread, so play doesn't stutter). If the window was not closed normally,
+  the game resumes from here.
+* `slot1-3.t18s` / `slot1-3.snap`: manual save slots. Loading a slot
+  autosaves the current game first.
+
+`game.flash` is shared by both versions; snapshots are not (the prototype's
+are Python pickles). `prototype/testing/to_rust_snap.py ROM IN.snap OUT.t18s`
+converts a prototype snapshot for the Rust version.
 
 Bluetooth (the phone app, the camera item) and infrared connections with
 another Tamagotchi are not supported: choosing one shows a notice and puts
@@ -92,7 +122,12 @@ match, so the game's time of day stays in step with the real clock.
 
 ### Scripted runs
 
-    python tg18emu.py <flash.bin> --insns 800000000 --frames frames --press 6.0:A --press 7.2:B
+    targetelease	g18cli.exe <flash.bin> --seconds 9 --press 6.0:A --press 7.2:B
+    python prototype/tg18emu.py <flash.bin> --insns 800000000 --frames frames --press 6.0:A --press 7.2:B
+
+Both take the options below (`--frames` only in the prototype; the Rust tool
+also has `--dump ADDR:LEN` to print memory at the end and `--quiet` to hide
+the firmware log; its snapshots are `.t18s` files).
 
 * `--seconds N`    emulated seconds to run (or `--insns N`)
 * `--frames DIR`   save every distinct LCD frame as PNG (3x scale)
@@ -102,7 +137,8 @@ match, so the game's time of day stays in step with the real clock.
   the clock; boots from it if it exists and writes it back at the end. The clock
   keeps running while the emulator is closed, like a real device.
 * `--snapshot-out FILE` / `--snapshot-in FILE`  freeze and resume the whole
-  machine mid-game. Snapshots are Python pickles: only load ones you made.
+  machine mid-game. The prototype's snapshots are Python pickles: only load
+  ones you made.
 * `--turbo N`      run the device clock N times faster (fast-forward game time)
 * `--wav FILE`     write the run's buzzer sound to a WAV file (silences longer
   than 2 s, such as deep sleep, are shortened)
@@ -118,17 +154,41 @@ emulation time.
 * `--no-idle-skip` always execute idle loops (for comparing behaviour)
 
 Speed: idle loops are detected by running one more pass of the current loop;
-if registers, internal RAM and hardware writes are unchanged, emulated time
-jumps to the next interrupt or button event. Typical screens then run faster
-than real time (about 2x in the menus, 1.7x in the room with the pet). The
-main loop calls rand() on every pass only to stir the sequence and discards the
-result, so rand()'s state (found by its code signature, present in all nine
-images) is left out of the comparison. Registers are read with one direct call
-into Unicorn's C API, as its Python wrapper costs ~35 us per read. Genuinely
-CPU-heavy stretches (loading a screen, formatting flash) run at about 0.4-0.5x,
-limited by Unicorn's instruction-count slicing in Python. Deep sleep costs
-nothing. The emulator never writes to the dump file. Saves and
-snapshots refuse to load with a different ROM version.
+if registers, memory and hardware writes are unchanged, emulated time jumps
+to the next interrupt or button event. (The Rust version logs the old value
+of every word written during the pass and compares at its end, so a stack
+slot that changes and changes back doesn't count.) The main loop calls
+rand() on every pass only to stir the sequence and discards the result, so
+rand()'s state (found by its code signature, present in all nine images) is
+left out of the comparison. Deep sleep costs nothing. The emulator never
+writes to the dump file. Saves and snapshots refuse to load with a different
+ROM version.
+
+| Situation (full speed, CLI) | Prototype | Rust |
+|---|---|---|
+| Room with the pet | ~1.35x | ~5x |
+| Menus / Game Corner | ~2x | ~20x |
+| Boot of a new game (9 s) | ~0.5x in busy parts | ~40x |
+| Busy stretches without idle time | 0.4-0.5x | ~1.6x |
+
+## Testing the Rust core against the prototype
+
+The Rust CPU is checked instruction by instruction against Unicorn, which the
+prototype uses:
+
+    python prototype/testing/trace.py ROM OUTDIR [--snap IN.snap] [--warmup S] [--insns N] [--press T:KEY]
+    target\release\lockstep.exe ROM OUTDIR
+
+`trace.py` runs the prototype and records the registers before every
+instruction, every value a hardware register returned, and everything done
+to the machine from outside (interrupts, button bits, shortcuts). `lockstep`
+replays that on the Rust core, feeding it the same hardware values, and stops
+at the first register that differs. `prototype/testing/lockstep_all.py`
+records and replays 29 situations: the first seconds of all nine ROMs, flash
+formatting, the name screen, egg, baby, child, a Surfing game, the Tama
+Resort, an adult in the menus, the wedding, the gen 2 naming screen, the
+Grim Gotchi, the grave, a new egg, sickness and the clock screen: 58 million
+instructions, all identical (2026-09-30).
 
 ## Controls learned so far (EN Wonder Garden)
 
