@@ -24,6 +24,7 @@ settings.json.tmp
 
 # private notes for Claude (never commit)
 CLAUDE.local.md
+old_README.md
 
 # Rust build output, Rust snapshots and the app's log
 /target/

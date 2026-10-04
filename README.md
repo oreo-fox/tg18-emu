@@ -1,50 +1,94 @@
 # tg18-emu
 
-Experimental emulator for Tamagotchi Meets / Tamagotchi On ("tg18") firmware,
-built as a feasibility study. No firmware is included; you need your own
-8 MiB SPI flash dump.
+tg18-emu is a Tamagotchi ON/Meets emulator for Windows written in Rust.
 
-Status: a playable prototype. All nine known dumps boot to the clock-setting
-screen. Wonder Garden (EN v063) and Magic (EN v058) have been played from setup
-(clock, birthday, name) to a hatched baby, with feeding, the menus, saves and
-deep sleep/wake working. Fairy (EN v057) has been played through a whole life
-cycle with scripted, fast-forwarded runs: egg, baby, child, teen and adult on
-the expected schedule, the TamaDepa shop, Game Corner, Tama Resort Hotel,
-friendship, marriage to an in-game character and the next generation's egg,
-as well as sickness, First Aid, the Grim Gotchi, death and the new egg after
-A+C. A live window shows the screen, takes the A/B/C buttons, plays the
-buzzer sound and runs in real time, with a ROM menu, settings, autosave and
-save slots.
+## Features
 
-There are two implementations:
+- Run the emulator in a window or windowless on your Windows desktop to drag around freely
+- Save any time
+- Auto-saves and save slots
+- Keep screen on or allow sleep to save resources (it will still beep for care calls like a real Tamagotchi).
+- Different pastel colored shells/backgrounds to choose from
+- Sync to system time via the menu
+- Mute/Unmute any time via menu
+- Different screen sizes
 
-* **Rust** (`core/`, `desktop/`): the main version. Its own ARMv5TE
-  interpreter (no Unicorn), about 4x faster than the prototype in the room
-  with the pet (5x real time at full speed, ~25% of one core at real time).
-  Checked instruction by instruction against the prototype (see Testing).
-* **Python prototype** (`prototype/`): the original feasibility study on
-  Unicorn, kept for reference and as the yardstick for the Rust version.
+## Limitations
 
-Not emulated yet:
+- Only available for Windows at the moment, port to Android is planned in the near future.
+- No background progression while the app is closed, time can be synced/progressed but there will be no change to the Tama's hunger, happiness or aging-up (basically the same as when you take out the batteries form the real device and put them in again later on)
+- Currently only "offline" play is possible. None of the Infrared/Bluetooth functions are usable. Therefore only NPCs can be married.
 
-* Bluetooth (the phone app, the camera item) and infrared connections with
-  another Tamagotchi. The window blocks them with a notice instead of letting
-  the game hang.
-* Time passing for the pet while the window is closed (the clock moves on, the
-  pet is paused, like a toy with the batteries out).
-* The backlight (dimming) and the two unidentified input pins.
+## Supported Firmware (ROMs)
+
+- Tamagotchi ON Fairy (EN)
+- Tamagotchi ON Magic (EN)
+- Tamagotchi ON Wonder Garden (EN)
+- Tamagotchi MEETS Fairy (JP)
+- Tamagotchi MEETS Magic (JP)
+- Tamagotchi MEETS Pastel (JP)
+- Tamagotchi MEETS Sanrio (JP)
+- Tamagotchi MEETS Sweets (JP)
+- Tamagotchi MEETS Fantasy (JP)
+
+Tamagotchi SOME (KR) are not supported at the moment.
+
 
 ## Legal
 
-This project contains no Bandai firmware, graphics or other copyrighted
-material, only independently written emulator code and hardware notes. Do not
+This project contains NO Bandai firmware, graphics or other copyrighted
+material, only independently written emulator code and hardware notes. Do NOT
 open issues or pull requests containing firmware dumps, save files, snapshots
-or screenshots. Tamagotchi is a trademark of Bandai; this project is not
+or screenshots. Tamagotchi is a trademark of Bandai. This project is not
 affiliated with or endorsed by Bandai.
 
 The emulator code is released under the MIT License (see `LICENSE`).
 
+## AI Disclaimer
+
+AI was used to assist with reverse-enginering and programming. 
+
 ## Usage
+
+### Installation
+
+1. Download the latest release
+2. Unzip the folder in a place where you want to keep it
+3. Put your Firmware (ROMs) into the roms folder
+4. Run tg18.exe and choose the firmware you want to play
+
+Take note that running the executable will likely trigger a SmartScreen alert (Windows protected your PC) since this is not a known software, select "More info" and "run anyway". This should only happen the first time you run it.
+
+### How to play
+
+The emulator will start in windowed mode by default. You can switch to "On Desktop" mode by selecting "Settings -> Put the toy on the desktop" in the top menu. From there you can drag it around your desktop freely like a virtual toy. To open the menu in desktop mode right-click anywhere on the virtual toy. 
+
+#### Settings
+
+File:
+* Open ROM: Select a rom from your current ROM folder to run
+* Open ROM folder: Open the current ROM folder
+* Choose ROM folder: Choose a different ROM folder
+* Save now: save current state (flash save)
+* Save slot/Load slot: Save and load up to three saves to dedicated slots
+* Open save folder: open the folder containing all flash saves and autosaves (snapshots)
+* Quit: Quit tg18-emu. Progress will be saved on quitting but your Tama's status (hunger, aging, etc.) will not advance in the background. Your last save will be loaded if you re-start the application.
+
+Settings:
+* Volume: Adjust volume directly without having to go to the in-game menu
+* Mute: Mute/unmute sound instantly (you cam also press M while windowed)
+* Screen size: Adjust screen size
+* Colour: Adjust shell/window color
+* Show A, B, C buttons: Show/hide letters on the buttons
+* Autosave: Enable/disable auto-saving and adjust frequency
+* Never sleep: Keeps the screen on all the time if enabled. Otherwise the screen goes to sleep after 1 minute like the actual device does. It will still beep on care calls if the screen is off. 
+* Stop clock while closed: Clock time will not be advanced when you open the emulator next time if enabled. Take note that your Tama's state will NOT change regardless of that setting (same as if you took out the batteries on the actual device)
+* Set clock to Windows time: You can use this to automatically adjust the clock to you system time. Again this will NOT change the state of your Tama (hunger, happiness, aging)
+* Put the toy to the desktop: Enable desktop mode
+
+Additional while in Desktop Mode (right-click):
+* Always on top: If enabled your virtual toy will show on top of other desktop applications
+* Back to the window: switch back to windowed mode
 
 ### Building (Rust)
 
@@ -70,74 +114,8 @@ folders, ready to zip. It needs no installation and only Windows' own
 libraries. Settings start at the built-in defaults (window, 3x, pink,
 volume 20%, never sleep off) until the player changes them.
 
-### Playing in a window
 
-    target\release\tg18.exe            (or double-click it)
-
-The program uses two folders next to it (in the project folder when it runs
-from its build folder), both empty to begin with:
-
-    tg18.exe
-    roms\      put your own ROM dumps here (8 MiB .bin files)
-    saves\     the emulator's saves, one folder per ROM
-
-With one dump in `roms` the game starts by itself; with several, pick one
-under File > Open ROM. Dumps copied in while the window is open are noticed
-within a couple of seconds. After that it reopens the last ROM and continues
-where you left off. File > Choose ROM folder uses another folder instead,
-and `tg18.exe <flash.bin>` opens a specific dump. The whole folder can be
-moved or copied elsewhere. Sound plays through Windows' built-in winmm.
-
-The prototype's window still works the same way (`pip install -r
-prototype/requirements.txt`, then `python prototype/tg18win.py`); both use the
-same `settings.json`, `roms/` and `saves/` folders.
-
-Press A, B and C with the `A` `B` `C` keys, the arrow keys (Left = A,
-Down = B, Right = C) or by clicking the buttons. Hold A and C together to
-press both. `M` mutes, `Ctrl+S` saves.
-
-* **File**: Open ROM (every dump in the ROM folder), Open ROM folder,
-  Choose ROM folder,
-  Save now, Save to slot / Load slot (3 slots per ROM), Open saves folder.
-* **Settings**: volume, mute, screen size (2x-6x), colour (pastel pink,
-  blue, green, yellow or lilac), letters on the buttons (on or off),
-  autosave interval (off,
-  1, 2, 5 or 10 minutes), Never sleep (default on) and Stop the toy's
-  clock while closed (default off; the pet itself is always paused while
-  closed, see below), and Set the toy's clock to Windows time now (the toy
-  goes to sleep, gets the new time and wakes up, like a real one whose clock
-  is set after a battery change; the pet is not changed). Settings are kept
-  in `settings.json`.
-
-The nine known versions are recognised by a fingerprint of their program
-code (the dumps contain no readable name or version), so they are named
-correctly and keep their saves whatever their files are called. Other dumps
-go by their file name. (The prototype always goes by the file name.)
-
-### Desktop toy
-
-Settings > Put the toy on the desktop turns the window into a
-small toy that sits on the desktop: no frame, our own rounded-square shell
-(not the real toy's) in the chosen colour. Drag it anywhere by its shell,
-click its buttons (or use the keys while it has the focus), right-click it
-for the menu, including Back to the window. It reopens where it was left
-and in the mode it was closed in. Its Settings menu (right-click) shows
-what applies there: size (2x-4x) and Never sleep (its own setting, off by
-default: the toy
-sleeps like the real one, the screen goes dark, the pet keeps living and
-the emulator uses almost no CPU; any button wakes it); Always on top (off
-by default) is in the right-click menu itself.
-
-While the toy is on the desktop it has no taskbar button; instead a rainbow
-egg sits in the notification area next to the clock. Click it to hide or
-show the toy (it keeps running while hidden), right-click it for Back to
-the window and Quit. When the toy beeps by itself (the pet calling: a short
-five-note tune, every one to three minutes while it needs care) it gives a
-little wiggle. This works while it sleeps too: like the real toy, it wakes
-for a moment every minute with the screen off and plays the care call if
-the pet is hungry or unhappy; the screen stays dark during these wake-ups.
-While the toy sleeps, its screen shows a night sky with a crescent moon and
-"Screen sleeping... Press a button to wake it" (in the window too).
+### Saving
 
 Saves are kept per ROM in `saves/<rom name>/`:
 
@@ -145,118 +123,16 @@ Saves are kept per ROM in `saves/<rom name>/`:
   close the window or switch ROMs, the device is put to sleep first, so the
   game saves itself exactly as the real toy does, and next time it wakes
   straight into the game.
-* `autosave.t18s` (Rust) / `autosave.snap` (prototype): a snapshot of the
+* `autosave.t18s`: a snapshot of the
   whole machine, taken at the autosave interval (written on a background
   thread, so play doesn't stutter). If the window was not closed normally,
   the game resumes from here.
 * `slot1-3.t18s` / `slot1-3.snap`: manual save slots. Loading a slot
   autosaves the current game first.
 
-`game.flash` is shared by both versions; snapshots are not (the prototype's
-are Python pickles). `prototype/testing/to_rust_snap.py ROM IN.snap OUT.t18s`
-converts a prototype snapshot for the Rust version.
+## Prototype
 
-Bluetooth (the phone app, the camera item) and infrared connections with
-another Tamagotchi are not supported: choosing one shows a notice and puts
-the game back to just before you chose it.
-
-Saves from before per-ROM folders (`saves/*.flash`) are imported automatically
-the first time their ROM is opened.
-
-Time while closed: the pet makes no progress while the window is closed, like
-a Tamagotchi with the batteries out. The device clock still moves forward by
-the time away, so the time of day stays right (unless Stop the toy's clock while
-closed is on). The firmware only counts time for the pet through the alarm wake-ups
-it makes about once a minute while asleep; replaying those would take ~45 s
-per 30 minutes away, so they are deliberately skipped.
-
-The window keeps up with real time on normal screens. In the rare busy
-moments when it can't (such as loading the room after CONTINUE, about 2 s at
-half speed), play goes into slow motion but the device clock is sped up to
-match, so the game's time of day stays in step with the real clock.
-
-### Scripted runs
-
-    target\release\tg18cli.exe <flash.bin> --seconds 9 --press 6.0:A --press 7.2:B
-    python prototype/tg18emu.py <flash.bin> --insns 800000000 --frames frames --press 6.0:A --press 7.2:B
-
-Both take the options below (`--frames` only in the prototype; the Rust tool
-also has `--dump ADDR:LEN` to print memory at the end and `--quiet` to hide
-the firmware log; its snapshots are `.t18s` files).
-
-* `--seconds N`    emulated seconds to run (or `--insns N`)
-* `--frames DIR`   save every distinct LCD frame as PNG (3x scale)
-* `--press T:KEY`  press A, B or C at T seconds into this run; `A+C` presses both
-* `--date "YYYY-MM-DD HH:MM"`  RTC start time (default: now, or the saved clock)
-* `--save FILE`    persistent flash (the game's save data) plus `FILE.json` for
-  the clock; boots from it if it exists and writes it back at the end. The clock
-  keeps running while the emulator is closed, like a real device.
-* `--snapshot-out FILE` / `--snapshot-in FILE`  freeze and resume the whole
-  machine mid-game. The prototype's snapshots are Python pickles: only load
-  ones you made.
-* `--turbo N`      run the device clock N times faster (fast-forward game time)
-* `--wav FILE`     write the run's buzzer sound to a WAV file (silences longer
-  than 2 s, such as deep sleep, are shortened)
-* `--never-sleep`  keep the device awake (resets the firmware's idle counter)
-* `--trace-mmio`   print the first access to every hardware register
-
-Deep sleep is emulated: after about a minute without input the firmware arms
-the RTC alarm and cuts power. The emulator then skips straight to the alarm
-(or the next scripted button press) and cold-boots the CPU, keeping flash, the
-RTC and its battery-backed registers, like the real chip. Sleep costs no
-emulation time.
-
-* `--no-idle-skip` always execute idle loops (for comparing behaviour)
-
-Speed: idle loops are detected by running one more pass of the current loop;
-if registers, memory and hardware writes are unchanged, emulated time jumps
-to the next interrupt or button event. (The Rust version logs the old value
-of every word written during the pass and compares at its end, so a stack
-slot that changes and changes back doesn't count.) The main loop calls
-rand() on every pass only to stir the sequence and discards the result, so
-rand()'s state (found by its code signature, present in all nine images) is
-left out of the comparison. Deep sleep costs nothing. The emulator never
-writes to the dump file. Saves and snapshots refuse to load with a different
-ROM version.
-
-| Situation (full speed, CLI) | Prototype | Rust |
-|---|---|---|
-| Room with the pet | ~1.35x | ~5x |
-| Menus / Game Corner | ~2x | ~20x |
-| Boot of a new game (9 s) | ~0.5x in busy parts | ~40x |
-| Busy stretches without idle time | 0.4-0.5x | ~1.6x |
-
-## Testing the Rust core against the prototype
-
-The Rust CPU is checked instruction by instruction against Unicorn, which the
-prototype uses:
-
-    python prototype/testing/trace.py ROM OUTDIR [--snap IN.snap] [--warmup S] [--insns N] [--press T:KEY]
-    target\release\lockstep.exe ROM OUTDIR
-
-`trace.py` runs the prototype and records the registers before every
-instruction, every value a hardware register returned, and everything done
-to the machine from outside (interrupts, button bits, shortcuts). `lockstep`
-replays that on the Rust core, feeding it the same hardware values, and stops
-at the first register that differs. `prototype/testing/lockstep_all.py`
-records and replays 29 situations: the first seconds of all nine ROMs, flash
-formatting, the name screen, egg, baby, child, a Surfing game, the Tama
-Resort, an adult in the menus, the wedding, the gen 2 naming screen, the
-Grim Gotchi, the grave, a new egg, sickness and the clock screen: 58 million
-instructions, all identical (2026-09-30).
-
-## Controls learned so far (EN Wonder Garden)
-
-* Clock / birthday setup: A changes the blinking field, B confirms it.
-* Name entry: A/C move the cursor right/left, B edits a slot. In the picker,
-  A cycles pages (letters, digits, symbols), B picks. Moving past the last slot
-  opens CONFIRM? YES/NO.
-* Main screen: A opens the 10-icon menu and moves between icons (it remembers
-  the last one), B selects, C goes back. Icons: Profile Setting, Meal&Snack,
-  Bathroom, Connection, (house), Explore My Town, Travel to Other Town,
-  Item Box, Notebook, First Aid Kit.
-* Feeding: Meal&Snack > Fridge > food > B. Status: Profile Setting > Profile,
-  A flips pages.
+A prototype was written in Python first to test feasability. While it is functional, performance is quite bad. You can just ignore it.
 
 ## Hardware notes (GeneralPlus GPBT03-family SoC, ARM926-class core)
 
@@ -364,23 +240,7 @@ true length and keeping 50-90 ms queued; `tg18emu.py --wav` writes it to a file.
 * While asleep the toy wakes on its RTC alarm about once a minute, updates the
   pet (hunger, happiness, age) and sleeps again; this is how time passes for
   the pet. Moving the clock forward alone doesn't age or feed it.
-* Life and death (EN Fairy, read from the firmware and confirmed by running
-  it). The pet's data starts at 0xF800D864. Once a game minute, day and
-  night, the game counts the minutes the hunger meter (+6) and the happiness
-  meter (+0x18) have been empty; feeding or a snack resets them. Each
-  sickness adds 1 to a count (+0x15). The Grim Gotchi appears when either
-  meter has been empty for 36 hours, or at the fifth sickness (the count is
-  then reset). First Aid in that hour sends the pet to the Tama Hospital and
-  saves it; otherwise the grave appears 60 minutes later (the firmware's
-  own timing, not the 15 minutes some guides give). A+C on the grave starts
-  a new egg; Gotchi Points are kept.
-* Marriage with an in-game character: meeting a resident (e.g. in the Tama
-  Hotel garden, who comes out is random) raises their friendship by 2, shown
-  as the bar on their Notebook card. A proposal needs a ring from the
-  TamaDepa (Heart Ring 500 G, Gem Ring 5000 G); a refused proposal uses up
-  the ring. A proposal at friendship 14 was accepted; the wedding is
-  followed by an egg that hatches at once.
 * The main loop calls newlib's rand() once per pass and discards the result,
   only to stir the sequence, so random events depend on when buttons are
   pressed. rand()'s 64-bit state lives in the reent struct (+0xA8), at
-  0xF8009AC0 in Wonder Garden.
+  0xF8009AC0.
