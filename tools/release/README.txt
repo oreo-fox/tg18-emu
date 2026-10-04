@@ -10,7 +10,7 @@ Your own flash dump of a Tamagotchi Meets / On (an 8 MB .bin file).
 No firmware comes with this program, and dumps may not be passed on.
 
 Supported: the EN Fairy, Magic and Wonder Garden versions and the
-JP Fairy, Magic, Fantasy, Pastel, Sanrio and Sweets versions.
+JP Fairy, Magical, Fantasy, Pastel, Sanrio and Sweets versions.
 
 
 STARTING

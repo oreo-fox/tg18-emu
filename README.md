@@ -16,7 +16,7 @@ tg18-emu is a Tamagotchi ON/Meets emulator for Windows written in Rust.
 ## Limitations
 
 - Only available for Windows at the moment, port to Android is planned in the near future.
-- No background progression while the app is closed, time can be synced/progressed but there will be no change to the Tama's hunger, happiness or aging-up (basically the same as when you take out the batteries form the real device and put them in again later on)
+- No background progression while the app is closed, time can be synced/progressed but there will be no change to the Tama's hunger, happiness or aging-up (basically the same as when you take out the batteries from the real device and put them in again later on)
 - Currently only "offline" play is possible. None of the Infrared/Bluetooth functions are usable. Therefore only NPCs can be married.
 
 ## Supported Firmware (ROMs)
@@ -25,7 +25,7 @@ tg18-emu is a Tamagotchi ON/Meets emulator for Windows written in Rust.
 - Tamagotchi ON Magic (EN)
 - Tamagotchi ON Wonder Garden (EN)
 - Tamagotchi MEETS Fairy (JP)
-- Tamagotchi MEETS Magic (JP)
+- Tamagotchi MEETS Magical (JP)
 - Tamagotchi MEETS Pastel (JP)
 - Tamagotchi MEETS Sanrio (JP)
 - Tamagotchi MEETS Sweets (JP)
@@ -46,7 +46,7 @@ The emulator code is released under the MIT License (see `LICENSE`).
 
 ## AI Disclaimer
 
-AI was used to assist with reverse-enginering and programming. 
+AI was used to assist with reverse-engineering and programming. 
 
 ## Usage
 
@@ -76,12 +76,12 @@ File:
 
 Settings:
 * Volume: Adjust volume directly without having to go to the in-game menu
-* Mute: Mute/unmute sound instantly (you cam also press M while windowed)
+* Mute: Mute/unmute sound instantly (you can also press M while windowed)
 * Screen size: Adjust screen size
 * Colour: Adjust shell/window color
 * Show A, B, C buttons: Show/hide letters on the buttons
 * Autosave: Enable/disable auto-saving and adjust frequency
-* Never sleep: Keeps the screen on all the time if enabled. Otherwise the screen goes to sleep after 1 minute like the actual device does. It will still beep on care calls if the screen is off. 
+* Never sleep: Keeps the screen on all the time if enabled. Otherwise the toy goes to sleep about 40 seconds after the last button press (3 minutes on some 2018 JP versions), like the actual device does. It will still beep on care calls if the screen is off. 
 * Stop clock while closed: Clock time will not be advanced when you open the emulator next time if enabled. Take note that your Tama's state will NOT change regardless of that setting (same as if you took out the batteries on the actual device)
 * Set clock to Windows time: You can use this to automatically adjust the clock to you system time. Again this will NOT change the state of your Tama (hunger, happiness, aging)
 * Put the toy to the desktop: Enable desktop mode
@@ -132,7 +132,7 @@ Saves are kept per ROM in `saves/<rom name>/`:
 
 ## Prototype
 
-A prototype was written in Python first to test feasability. While it is functional, performance is quite bad. You can just ignore it.
+A prototype was written in Python first to test feasibility. While it is functional, performance is quite bad. You can just ignore it.
 
 ## Hardware notes (GeneralPlus GPBT03-family SoC, ARM926-class core)
 
