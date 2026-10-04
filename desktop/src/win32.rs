@@ -126,6 +126,108 @@ pub struct WAVEHDR {
     pub reserved: usize,
 }
 
+#[repr(C)]
+#[derive(Default, Clone, Copy)]
+pub struct SIZE {
+    pub cx: i32,
+    pub cy: i32,
+}
+
+#[repr(C)]
+pub struct BLENDFUNCTION {
+    pub BlendOp: u8,
+    pub BlendFlags: u8,
+    pub SourceConstantAlpha: u8,
+    pub AlphaFormat: u8,
+}
+
+#[repr(C)]
+pub struct ICONINFO {
+    pub fIcon: i32,
+    pub xHotspot: u32,
+    pub yHotspot: u32,
+    pub hbmMask: isize,
+    pub hbmColor: isize,
+}
+
+#[repr(C)]
+pub struct NOTIFYICONDATAW {
+    pub cbSize: u32,
+    pub hWnd: HWND,
+    pub uID: u32,
+    pub uFlags: u32,
+    pub uCallbackMessage: u32,
+    pub hIcon: isize,
+    pub szTip: [u16; 128],
+    pub dwState: u32,
+    pub dwStateMask: u32,
+    pub szInfo: [u16; 256],
+    pub uVersion: u32,
+    pub szInfoTitle: [u16; 64],
+    pub dwInfoFlags: u32,
+    pub guidItem: [u32; 4],
+    pub hBalloonIcon: isize,
+}
+
+impl Default for NOTIFYICONDATAW {
+    fn default() -> Self {
+        // all zero is a valid empty record
+        unsafe { std::mem::zeroed() }
+    }
+}
+
+pub const NIM_ADD: u32 = 0;
+pub const NIM_MODIFY: u32 = 1;
+pub const NIM_DELETE: u32 = 2;
+pub const NIF_MESSAGE: u32 = 1;
+pub const NIF_ICON: u32 = 2;
+pub const NIF_TIP: u32 = 4;
+pub const WM_APP: u32 = 0x8000;
+pub const WM_RBUTTONUP: u32 = 0x0205;
+pub const WM_ENTERSIZEMOVE: u32 = 0x0231;
+pub const WS_EX_TOOLWINDOW: u32 = 0x0000_0080;
+
+pub const SM_CXICON: i32 = 11;
+pub const SM_CXSMICON: i32 = 49;
+pub const WM_SETICON: u32 = 0x0080;
+pub const ICON_SMALL: usize = 0;
+pub const ICON_BIG: usize = 1;
+
+pub const AC_SRC_ALPHA: u8 = 1;
+pub const ULW_ALPHA: u32 = 2;
+pub const WS_POPUP: u32 = 0x8000_0000;
+pub const WS_EX_LAYERED: u32 = 0x0008_0000;
+pub const WS_EX_TOPMOST: u32 = 0x0000_0008;
+pub const HWND_TOPMOST: HWND = -1;
+pub const HWND_NOTOPMOST: HWND = -2;
+pub const SWP_NOSIZE: u32 = 0x0001;
+pub const SWP_NOMOVE: u32 = 0x0002;
+pub const SWP_NOZORDER: u32 = 0x0004;
+pub const SWP_NOACTIVATE: u32 = 0x0010;
+pub const SW_HIDE: i32 = 0;
+pub const WM_NULL: u32 = 0x0000;
+pub const WM_TIMER: u32 = 0x0113;
+pub const WM_NCHITTEST: u32 = 0x0084;
+pub const WM_NCLBUTTONDBLCLK: u32 = 0x00A3;
+pub const WM_NCRBUTTONUP: u32 = 0x00A5;
+pub const WM_CONTEXTMENU: u32 = 0x007B;
+pub const WM_EXITSIZEMOVE: u32 = 0x0232;
+pub const HTCLIENT: LRESULT = 1;
+pub const HTCAPTION: LRESULT = 2;
+pub const TPM_RIGHTBUTTON: u32 = 0x0002;
+pub const SPI_GETWORKAREA: u32 = 0x0030;
+pub const MONITOR_DEFAULTTONULL: u32 = 0;
+pub const MONITOR_DEFAULTTONEAREST: u32 = 2;
+
+#[repr(C)]
+#[derive(Default)]
+pub struct MONITORINFO {
+    pub cbSize: u32,
+    pub rcMonitor: RECT,
+    pub rcWork: RECT,
+    pub dwFlags: u32,
+}
+
 pub const WS_OVERLAPPED: u32 = 0;
 pub const WS_CAPTION: u32 = 0x00C0_0000;
 pub const WS_SYSMENU: u32 = 0x0008_0000;
@@ -184,6 +286,10 @@ pub const VK_RIGHT: usize = 0x27;
 pub const DT_CENTER: u32 = 1;
 pub const DT_VCENTER: u32 = 4;
 pub const DT_SINGLELINE: u32 = 0x20;
+pub const DT_WORDBREAK: u32 = 0x10;
+pub const DT_CALCRECT: u32 = 0x400;
+/// Long words (paths) are broken too instead of running off the edge.
+pub const DT_EDITCONTROL: u32 = 0x2000;
 pub const TRANSPARENT: i32 = 1;
 pub const COLORONCOLOR: i32 = 3;
 pub const SRCCOPY: u32 = 0x00CC_0020;
@@ -252,6 +358,31 @@ extern "system" {
     pub fn ReleaseCapture() -> i32;
     pub fn SetProcessDPIAware() -> i32;
     pub fn SetForegroundWindow(h: HWND) -> i32;
+    pub fn UpdateLayeredWindow(
+        h: HWND,
+        dst_dc: HDC,
+        dst_pos: *const POINT,
+        size: *const SIZE,
+        src_dc: HDC,
+        src_pos: *const POINT,
+        key: u32,
+        blend: *const BLENDFUNCTION,
+        flags: u32,
+    ) -> i32;
+    pub fn GetWindowRect(h: HWND, r: *mut RECT) -> i32;
+    pub fn SystemParametersInfoW(action: u32, param: u32, pv: *mut c_void, ini: u32) -> i32;
+    pub fn MonitorFromPoint(pt: POINT, flags: u32) -> isize;
+    pub fn GetMonitorInfoW(mon: isize, info: *mut MONITORINFO) -> i32;
+    pub fn CreateIconIndirect(info: *const ICONINFO) -> isize;
+    pub fn DestroyIcon(icon: isize) -> i32;
+    pub fn GetSystemMetrics(index: i32) -> i32;
+    pub fn SendMessageW(h: HWND, m: u32, w: WPARAM, l: LPARAM) -> LRESULT;
+    pub fn RegisterWindowMessageW(name: *const u16) -> u32;
+    pub fn GetCursorPos(p: *mut POINT) -> i32;
+    pub fn IsWindowVisible(h: HWND) -> i32;
+    pub fn SetTimer(h: HWND, id: usize, ms: u32, f: *const c_void) -> usize;
+    pub fn TrackPopupMenu(m: HMENU, flags: u32, x: i32, y: i32, reserved: i32, h: HWND, r: *const RECT) -> i32;
+    pub fn PostMessageW(h: HWND, m: u32, w: WPARAM, l: LPARAM) -> i32;
 }
 
 #[link(name = "gdi32")]
@@ -300,6 +431,9 @@ extern "system" {
     pub fn BitBlt(dc: HDC, x: i32, y: i32, w: i32, h: i32, src: HDC, xs: i32, ys: i32, rop: u32) -> i32;
     pub fn DeleteDC(dc: HDC) -> i32;
     pub fn GetDeviceCaps(dc: HDC, index: i32) -> i32;
+    pub fn CreateBitmap(w: i32, h: i32, planes: u32, bits_per_pixel: u32, bits: *const c_void) -> isize;
+    pub fn CreateDIBSection(dc: HDC, info: *const BITMAPINFO, usage: u32, bits: *mut *mut c_void, section: isize,
+                            offset: u32) -> isize;
 }
 
 #[link(name = "kernel32")]
@@ -311,6 +445,7 @@ extern "system" {
 extern "system" {
     pub fn SHBrowseForFolderW(bi: *const BROWSEINFOW) -> *mut c_void;
     pub fn SHGetPathFromIDListW(pidl: *const c_void, path: *mut u16) -> i32;
+    pub fn Shell_NotifyIconW(what: u32, data: *const NOTIFYICONDATAW) -> i32;
     pub fn ShellExecuteW(h: HWND, op: *const u16, file: *const u16, params: *const u16, dir: *const u16, show: i32) -> isize;
 }
 
@@ -345,6 +480,13 @@ pub fn from_wide(buf: &[u16]) -> String {
 /// COLORREF from #rrggbb.
 pub const fn rgb(hex: u32) -> u32 {
     ((hex & 0xFF) << 16) | (hex & 0xFF00) | ((hex >> 16) & 0xFF)
+}
+
+/// DrawTextW with a NUL-terminated copy of the text. (An empty Rust string
+/// has no real buffer behind it, and Windows reads the pointer even when
+/// told the length is 0: that crashed the app when no ROM was loaded.)
+pub fn draw_text(dc: HDC, text: &str, r: &mut RECT, fmt: u32) -> i32 {
+    unsafe { DrawTextW(dc, wide(text).as_ptr(), -1, r, fmt) }
 }
 
 pub fn message_box(owner: HWND, title: &str, text: &str, flags: u32) -> i32 {

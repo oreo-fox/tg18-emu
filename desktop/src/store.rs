@@ -1,7 +1,10 @@
 //! Settings, the ROM folder and per-ROM saves (same layout as the prototype):
 //!
 //!   settings.json            window settings (shared with the prototype)
+//!   roms/                    the user's ROM dumps (default ROM folder)
 //!   saves/<rom name>/game.flash (+ .json)   the toy's own flash save and clock
+//!                            (<rom name>: the version's usual file name, see
+//!                            identity(), so renamed dumps keep their saves)
 //!   saves/<rom name>/autosave.t18s          snapshot, every few minutes
 //!   saves/<rom name>/slot1-3.t18s           manual save slots
 //!
@@ -18,6 +21,7 @@ pub const SLOTS: usize = 3;
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(default)]
 pub struct Settings {
+    /// A ROM folder the user chose; None = the roms folder next to the program.
     pub rom_dir: Option<String>,
     pub last_rom: Option<String>,
     pub volume: u32,
@@ -26,6 +30,21 @@ pub struct Settings {
     pub autosave_minutes: u32,
     pub never_sleep: bool,
     pub pause_time_when_closed: bool,
+    /// Window colour: "pink", "blue", "green", "yellow" or "lilac".
+    pub theme: String,
+    /// Desktop mode: the toy sits on the desktop instead of in a window.
+    pub desk_mode: bool,
+    /// Where the desktop toy was left (screen pixels), None = not placed yet.
+    pub desk_x: Option<i32>,
+    pub desk_y: Option<i32>,
+    /// Screen size of the desktop toy (2x-4x).
+    pub desk_scale: u32,
+    pub desk_on_top: bool,
+    /// Keep the toy awake in desktop mode too. Off: it sleeps like the real
+    /// toy (screen off, almost no CPU) and a button wakes it.
+    pub desk_never_sleep: bool,
+    /// Letters A, B, C on the buttons (off: plain buttons).
+    pub button_labels: bool,
 }
 
 impl Default for Settings {
@@ -39,6 +58,14 @@ impl Default for Settings {
             autosave_minutes: 1,
             never_sleep: true,
             pause_time_when_closed: false,
+            theme: "pink".to_string(),
+            desk_mode: false,
+            desk_x: None,
+            desk_y: None,
+            desk_scale: 2,
+            desk_on_top: false,
+            desk_never_sleep: false,
+            button_labels: true,
         }
     }
 }
@@ -65,6 +92,11 @@ impl Settings {
         app_dir().join("settings.json")
     }
 
+    /// The folder ROMs are listed from.
+    pub fn rom_folder(&self) -> PathBuf {
+        self.rom_dir.as_ref().map(PathBuf::from).unwrap_or_else(roms_dir)
+    }
+
     pub fn load() -> Settings {
         std::fs::read_to_string(Self::path())
             .ok()
@@ -85,6 +117,21 @@ pub fn saves_dir() -> PathBuf {
     app_dir().join("saves")
 }
 
+/// The default ROM folder, next to the program (empty in a release: the
+/// user puts their own dumps there).
+pub fn roms_dir() -> PathBuf {
+    app_dir().join("roms")
+}
+
+/// True if both paths name the same folder.
+pub fn same_dir(a: &Path, b: &Path) -> bool {
+    a == b
+        || match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+            (Ok(x), Ok(y)) => x == y,
+            _ => false,
+        }
+}
+
 pub fn is_rom(path: &Path) -> bool {
     use std::io::Read;
     let ok_size = std::fs::metadata(path).map(|m| m.len() as usize == tg18::FLASH_SIZE).unwrap_or(false);
@@ -94,25 +141,68 @@ pub fn is_rom(path: &Path) -> bool {
         && &head == b"SPII"
 }
 
-/// (file name, display name) of every tg18 image in folder, sorted by name.
-pub fn list_roms(folder: Option<&str>) -> Vec<(String, String)> {
-    let folder = match folder {
-        Some(f) => f,
-        None => return Vec::new(),
+/// What a dump is: (display name, save folder name). Known versions are
+/// recognised by their program code, whatever the file is called; others
+/// go by the file name.
+pub fn identity(filename: &str, image: &[u8]) -> (String, String) {
+    identity_of_hash(filename, tg18::code_hash(image))
+}
+
+fn identity_of_hash(filename: &str, hash: u64) -> (String, String) {
+    match tg18::roms::identify_hash(hash) {
+        Some(k) => (k.display_name(), k.stem()),
+        None => {
+            let stem = Path::new(filename).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+            (display_name(filename), stem)
+        }
+    }
+}
+
+/// Code fingerprints of the files looked at, by path, with the file's size
+/// and time: the folder is rescanned every few seconds, the files are only
+/// read again when they change.
+type HashCache = std::collections::HashMap<PathBuf, (u64, std::time::SystemTime, u64)>;
+static HASHES: std::sync::Mutex<Option<HashCache>> = std::sync::Mutex::new(None);
+
+/// identity() of a dump on disk.
+pub fn file_identity(path: &Path) -> Option<(String, String)> {
+    use std::io::Read;
+    let meta = std::fs::metadata(path).ok()?;
+    let (len, time) = (meta.len(), meta.modified().ok()?);
+    let mut cache = HASHES.lock().unwrap_or_else(|e| e.into_inner());
+    let cache = cache.get_or_insert_with(Default::default);
+    let hash = match cache.get(path) {
+        Some(&(l, t, h)) if l == len && t == time => h,
+        _ => {
+            let mut code = vec![0u8; tg18::CODE_CHECK_LEN];
+            std::fs::File::open(path).and_then(|mut f| f.read_exact(&mut code)).ok()?;
+            let h = tg18::code_hash(&code);
+            cache.insert(path.to_path_buf(), (len, time, h));
+            h
+        }
     };
+    let filename = path.file_name()?.to_string_lossy().to_string();
+    Some(identity_of_hash(&filename, hash))
+}
+
+/// (file name, display name) of every tg18 image in folder, sorted by name.
+pub fn list_roms(folder: &Path) -> Vec<(String, String)> {
     let mut roms: Vec<(String, String)> = std::fs::read_dir(folder)
         .map(|rd| {
             rd.filter_map(|e| e.ok())
                 .map(|e| e.path())
                 .filter(|p| p.extension().map_or(false, |x| x.eq_ignore_ascii_case("bin")) && is_rom(p))
-                .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
-                .map(|n| {
-                    let d = display_name(&n);
-                    (n, d)
-                })
+                .filter_map(|p| Some((p.file_name()?.to_string_lossy().to_string(), file_identity(&p)?.0)))
                 .collect()
         })
         .unwrap_or_default();
+    // two copies of the same version: tell them apart by file name
+    let names: Vec<String> = roms.iter().map(|r| r.1.clone()).collect();
+    for r in roms.iter_mut() {
+        if names.iter().filter(|n| **n == r.1).count() > 1 {
+            r.1 = format!("{} \u{2013} {}", r.1, r.0);
+        }
+    }
     roms.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
     roms
 }
@@ -161,9 +251,9 @@ fn mtime(p: &str) -> Option<f64> {
 }
 
 impl SaveStore {
-    pub fn new(rom_path: &Path) -> SaveStore {
-        let stem = rom_path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
-        let dir = saves_dir().join(stem);
+    /// The saves of a ROM; `name` is its save folder name (see identity()).
+    pub fn new(name: &str) -> SaveStore {
+        let dir = saves_dir().join(name);
         let _ = std::fs::create_dir_all(&dir);
         let s = |n: &str| dir.join(n).to_string_lossy().to_string();
         SaveStore { flash: s("game.flash"), autosave: s("autosave.t18s"), dir }

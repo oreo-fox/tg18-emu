@@ -27,10 +27,11 @@ import tg18emu as te
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SETTINGS_PATH = os.path.join(APP_DIR, 'settings.json')
 SAVES_DIR = os.path.join(APP_DIR, 'saves')
+ROMS_DIR = os.path.join(APP_DIR, 'roms')
 SLOTS = 3
 
 DEFAULTS = {
-    'rom_dir': None,
+    'rom_dir': None,              # None = ROMS_DIR
     'last_rom': None,             # file name inside rom_dir
     'volume': 60,
     'muted': False,
@@ -56,6 +57,15 @@ def store_settings(settings):
     with open(tmp, 'w') as f:
         json.dump(settings, f, indent=1)
     os.replace(tmp, SETTINGS_PATH)
+
+
+def rom_folder(settings):
+    """The folder ROMs are listed from: the chosen one, else roms/."""
+    return settings['rom_dir'] or ROMS_DIR
+
+
+def same_dir(a, b):
+    return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
 
 
 def is_rom(path):

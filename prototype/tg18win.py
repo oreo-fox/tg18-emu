@@ -195,7 +195,7 @@ class Window:
         setm.add_checkbutton(label='Never sleep (keep the screen on)',
                              variable=self.var['never_sleep'],
                              command=lambda: self.changed('never_sleep'))
-        setm.add_checkbutton(label='Pause time while closed',
+        setm.add_checkbutton(label="Stop the toy's clock while closed",
                              variable=self.var['pause_time_when_closed'],
                              command=lambda: self.changed('pause_time_when_closed'))
         bar.add_cascade(label='Settings', menu=setm)
@@ -217,9 +217,9 @@ class Window:
     def fill_rom_menu(self):
         m = self.rom_menu
         m.delete(0, 'end')
-        roms = ts.list_roms(self.settings['rom_dir'])
+        roms = ts.list_roms(ts.rom_folder(self.settings))
         if not roms:
-            m.add_command(label='(no ROMs found: choose the ROM folder)', state='disabled')
+            m.add_command(label='(no ROMs: put your dumps in the ROM folder)', state='disabled')
         for filename, name in roms:
             m.add_radiobutton(label=name, value=filename, variable=self.var['rom'],
                               command=lambda f=filename: self.switch_rom(f))
@@ -305,16 +305,28 @@ class Window:
         if rom:
             self.open_rom(os.path.abspath(rom))
             return
-        if s['rom_dir'] and s['last_rom'] and ts.is_rom(os.path.join(s['rom_dir'], s['last_rom'])):
-            self.open_rom(os.path.join(s['rom_dir'], s['last_rom']))
+        folder = ts.rom_folder(s)
+        os.makedirs(ts.ROMS_DIR, exist_ok=True)
+        os.makedirs(ts.SAVES_DIR, exist_ok=True)
+        if s['last_rom'] and ts.is_rom(os.path.join(folder, s['last_rom'])):
+            self.open_rom(os.path.join(folder, s['last_rom']))
             return
-        self.show_hint('Choose the folder with your ROM dumps\n(File > Choose ROM folder)')
-        if not s['rom_dir']:
-            self.choose_folder()
+        self.no_game_yet(ts.list_roms(folder))
+
+    def no_game_yet(self, roms):
+        """Nothing is running: open the only ROM there is, or say what to do."""
+        if not roms:
+            self.show_hint('Put your tg18 ROM dumps (8 MiB .bin files) into this folder:\n\n%s\n\n'
+                           '(or File > Choose ROM folder)' % ts.rom_folder(self.settings))
+        elif len(roms) == 1:
+            self.switch_rom(roms[0][0])
+        else:
+            self.show_hint('Pick a ROM: File > Open ROM')
+            self.pick_rom(roms)
 
     def choose_folder(self):
         folder = filedialog.askdirectory(parent=self.root, title='Folder with your tg18 ROM dumps',
-                                         initialdir=self.settings['rom_dir'] or os.path.expanduser('~'))
+                                         initialdir=ts.rom_folder(self.settings))
         if not folder:
             return
         roms = ts.list_roms(folder)
@@ -322,14 +334,11 @@ class Window:
             messagebox.showwarning('No ROMs found', 'No tg18 flash dumps (8 MiB .bin files '
                                    'starting with SPII) were found in\n%s' % folder, parent=self.root)
             return
-        self.settings['rom_dir'] = folder
+        # roms/ next to the program is the default and is not stored
+        self.settings['rom_dir'] = None if ts.same_dir(folder, ts.ROMS_DIR) else folder
         ts.store_settings(self.settings)
         if not self.emu:
-            self.show_hint('Pick a ROM: File > Open ROM')
-            if len(roms) == 1:
-                self.switch_rom(roms[0][0])
-            else:
-                self.pick_rom(roms)
+            self.no_game_yet(roms)
 
     def pick_rom(self, roms):
         """Small list dialog for choosing the first ROM."""
@@ -353,7 +362,7 @@ class Window:
         lb.focus_set()
 
     def switch_rom(self, filename):
-        path = os.path.join(self.settings['rom_dir'], filename)
+        path = os.path.join(ts.rom_folder(self.settings), filename)
         if self.rom_path and os.path.abspath(path) == os.path.abspath(self.rom_path):
             return
         self.open_rom(path)
@@ -378,8 +387,7 @@ class Window:
         self.image, self.store, self.rom_path = image, store, path
         self.set_emu(emu)
         s = self.settings
-        s['rom_dir'] = s['rom_dir'] or os.path.dirname(path)
-        if os.path.abspath(os.path.dirname(path)) == os.path.abspath(s['rom_dir']):
+        if ts.same_dir(os.path.dirname(path), ts.rom_folder(s)):
             s['last_rom'] = os.path.basename(path)
         ts.store_settings(s)
         self.var['rom'].set(os.path.basename(path))

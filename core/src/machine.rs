@@ -66,6 +66,10 @@ pub struct Machine {
     clock_refresh: Option<u32>,
     clock_minute: Option<i64>,
     pub stop_on_bluetooth: bool,
+    /// Woken by the RTC alarm (the once-a-minute update while asleep), not
+    /// by a button: the backlight stays off, though the game may draw and
+    /// beep (care calls). Cleared by the app when a button is pressed.
+    pub alarm_wake: bool,
     pub bluetooth_used: bool,
     pub ble_failed: bool,
     pub log: Vec<String>,
@@ -117,6 +121,7 @@ impl Machine {
             clock_refresh: None,
             clock_minute: None,
             stop_on_bluetooth: false,
+            alarm_wake: false,
             bluetooth_used: false,
             ble_failed: false,
             log: Vec::new(),
@@ -625,19 +630,21 @@ impl Machine {
     pub fn power_cycle(&mut self, limit: u64) -> bool {
         let now = self.now();
         let turbo = self.sys.turbo;
-        let mut wait: Option<f64> = None;
+        let mut alarm_dt: Option<f64> = None;
         if let Some(alarm) = self.sys.rtc.alarm_ticks() {
-            let dt = ((alarm - self.sys.rtc.ticks(self.sys.game_time)) as f64 / 32768.0 / turbo).max(0.0);
-            wait = Some(dt);
+            alarm_dt = Some(((alarm - self.sys.rtc.ticks(self.sys.game_time)) as f64 / 32768.0 / turbo).max(0.0));
         }
+        let mut key_dt: Option<f64> = None;
         for &(t, _) in &self.sys.key_script {
             if t >= now {
-                wait = Some(wait.map_or(t - now, |w| w.min(t - now)));
+                key_dt = Some(key_dt.map_or(t - now, |w: f64| w.min(t - now)));
             }
         }
-        let dt = match wait {
-            Some(d) => d,
-            None => return false,
+        let (dt, by_alarm) = match (alarm_dt, key_dt) {
+            (Some(a), Some(k)) => (a.min(k), a < k),
+            (Some(a), None) => (a, true),
+            (None, Some(k)) => (k, false),
+            (None, None) => return false,
         };
         if self.executed + (dt * CPU_HZ) as u64 > limit {
             // still asleep at the end
@@ -647,6 +654,7 @@ impl Machine {
             return true;
         }
         self.cold_boot(dt);
+        self.alarm_wake = by_alarm;
         true
     }
 

@@ -4,7 +4,11 @@
 *.flash
 *.flash.json
 *.snap
-saves/
+# the roms and saves folders ship empty, with only their README
+/roms/*
+!/roms/README.txt
+/saves/*
+!/saves/README.txt
 
 # Screenshots show the game's copyrighted graphics.
 *.png

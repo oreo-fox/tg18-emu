@@ -7,6 +7,7 @@
 pub mod cpu;
 pub mod machine;
 pub mod png;
+pub mod roms;
 pub mod save;
 pub mod sigs;
 pub mod snapshot;

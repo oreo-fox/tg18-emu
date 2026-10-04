@@ -61,30 +61,74 @@ platform code apart from reading the local time.
 
 ### Playing in a window
 
-    target
-elease	g18.exe            (or double-click it)
+    target\release\tg18.exe            (or double-click it)
 
-The first time, it asks for the folder with your ROM dumps; after that it
-reopens the last ROM and continues where you left off. `tg18.exe <flash.bin>`
-opens a specific dump. Sound plays through Windows' built-in winmm.
+The program uses two folders next to it (in the project folder when it runs
+from its build folder), both empty to begin with:
+
+    tg18.exe
+    roms\      put your own ROM dumps here (8 MiB .bin files)
+    saves\     the emulator's saves, one folder per ROM
+
+With one dump in `roms` the game starts by itself; with several, pick one
+under File > Open ROM. Dumps copied in while the window is open are noticed
+within a couple of seconds. After that it reopens the last ROM and continues
+where you left off. File > Choose ROM folder uses another folder instead,
+and `tg18.exe <flash.bin>` opens a specific dump. The whole folder can be
+moved or copied elsewhere. Sound plays through Windows' built-in winmm.
 
 The prototype's window still works the same way (`pip install -r
 prototype/requirements.txt`, then `python prototype/tg18win.py`); both use the
-same `settings.json` and `saves/` folder.
+same `settings.json`, `roms/` and `saves/` folders.
 
 Press A, B and C with the `A` `B` `C` keys, the arrow keys (Left = A,
 Down = B, Right = C) or by clicking the buttons. Hold A and C together to
 press both. `M` mutes, `Ctrl+S` saves.
 
-* **File**: Open ROM (every dump in the ROM folder), Choose ROM folder,
+* **File**: Open ROM (every dump in the ROM folder), Open ROM folder,
+  Choose ROM folder,
   Save now, Save to slot / Load slot (3 slots per ROM), Open saves folder.
-* **Settings**: volume, mute, screen size (2x-6x), autosave interval (off,
-  1, 2, 5 or 10 minutes), Never sleep (default on) and Pause time while
-  closed (default off). Settings are kept in `settings.json`.
+* **Settings**: volume, mute, screen size (2x-6x), colour (pastel pink,
+  blue, green, yellow or lilac), letters on the buttons (on or off),
+  autosave interval (off,
+  1, 2, 5 or 10 minutes), Never sleep (default on) and Stop the toy's
+  clock while closed (default off; the pet itself is always paused while
+  closed, see below), and Set the toy's clock to Windows time now (the toy
+  goes to sleep, gets the new time and wakes up, like a real one whose clock
+  is set after a battery change; the pet is not changed). Settings are kept
+  in `settings.json`.
 
-Saves are kept per ROM in `saves/<rom name>/` (in the project folder, next to
-`settings.json`; the Rust app uses the folder it was built in, or the one
-next to `tg18.exe` elsewhere):
+The nine known versions are recognised by a fingerprint of their program
+code (the dumps contain no readable name or version), so they are named
+correctly and keep their saves whatever their files are called. Other dumps
+go by their file name. (The prototype always goes by the file name.)
+
+### Desktop toy
+
+Settings > Put the toy on the desktop turns the window into a
+small toy that sits on the desktop: no frame, our own rounded-square shell
+(not the real toy's) in the chosen colour. Drag it anywhere by its shell,
+click its buttons (or use the keys while it has the focus), right-click it
+for the menu, including Back to the window. It reopens where it was left
+and in the mode it was closed in. Its Settings menu (right-click) shows
+what applies there: size (2x-4x) and Never sleep (its own setting, off by
+default: the toy
+sleeps like the real one, the screen goes dark, the pet keeps living and
+the emulator uses almost no CPU; any button wakes it); Always on top (off
+by default) is in the right-click menu itself.
+
+While the toy is on the desktop it has no taskbar button; instead a rainbow
+egg sits in the notification area next to the clock. Click it to hide or
+show the toy (it keeps running while hidden), right-click it for Back to
+the window and Quit. When the toy beeps by itself (the pet calling: a short
+five-note tune, every one to three minutes while it needs care) it gives a
+little wiggle. This works while it sleeps too: like the real toy, it wakes
+for a moment every minute with the screen off and plays the care call if
+the pet is hungry or unhappy; the screen stays dark during these wake-ups.
+While the toy sleeps, its screen shows a night sky with a crescent moon and
+"Screen sleeping... Press a button to wake it" (in the window too).
+
+Saves are kept per ROM in `saves/<rom name>/`:
 
 * `game.flash` (+ `.json`): the toy's own flash save and clock. When you
   close the window or switch ROMs, the device is put to sleep first, so the
@@ -110,8 +154,8 @@ the first time their ROM is opened.
 
 Time while closed: the pet makes no progress while the window is closed, like
 a Tamagotchi with the batteries out. The device clock still moves forward by
-the time away, so the time of day stays right (unless Pause time while closed
-is on). The firmware only counts time for the pet through the alarm wake-ups
+the time away, so the time of day stays right (unless Stop the toy's clock while
+closed is on). The firmware only counts time for the pet through the alarm wake-ups
 it makes about once a minute while asleep; replaying those would take ~45 s
 per 30 minutes away, so they are deliberately skipped.
 
@@ -122,7 +166,7 @@ match, so the game's time of day stays in step with the real clock.
 
 ### Scripted runs
 
-    targetelease	g18cli.exe <flash.bin> --seconds 9 --press 6.0:A --press 7.2:B
+    target\release\tg18cli.exe <flash.bin> --seconds 9 --press 6.0:A --press 7.2:B
     python prototype/tg18emu.py <flash.bin> --insns 800000000 --frames frames --press 6.0:A --press 7.2:B
 
 Both take the options below (`--frames` only in the prototype; the Rust tool
