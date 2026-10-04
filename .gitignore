@@ -29,3 +29,6 @@ CLAUDE.local.md
 /target/
 *.t18s
 tg18.log
+
+# release folders built by tools/make_release.py
+/dist/

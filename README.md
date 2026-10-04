@@ -59,6 +59,17 @@ runs) and `lockstep.exe` (the CPU check). The window app is Windows-only for
 now (it uses the Windows API directly, no extra packages); the core has no
 platform code apart from reading the local time.
 
+### Making a release
+
+    python tools/make_release.py [WHERE]
+
+builds `tg18-emu-win` (default in `dist/`, which git ignores): a lean
+`tg18.exe` without debug data, a short guide for players
+(`tools/release/README.txt`), the license and empty `roms` and `saves`
+folders, ready to zip. It needs no installation and only Windows' own
+libraries. Settings start at the built-in defaults (window, 3x, pink,
+volume 20%, never sleep off) until the player changes them.
+
 ### Playing in a window
 
     target\release\tg18.exe            (or double-click it)
