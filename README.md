@@ -56,7 +56,7 @@ AI was used to assist with reverse-engineering and programming.
 
 ### Installation
 
-1. Download the latest release
+1. Download the latest release [here](https://github.com/oreo-fox/tg18-emu/releases)
 2. Unzip the folder in a place where you want to keep it
 3. Put your Firmware (ROMs) into the roms folder
 4. Run tg18.exe and choose the firmware you want to play
@@ -104,6 +104,13 @@ Settings:
 Additional while in Desktop Mode (right-click):
 * Always on top: If enabled your virtual toy will show on top of other desktop applications
 * Back to the window: switch back to windowed mode
+
+#### Bug reports
+
+Please report bugs [here](https://github.com/oreo-fox/tg18-emu/issues).
+
+Select "New Issue" > Bug report and fill in the form.
+
 
 ### Building (Rust)
 
