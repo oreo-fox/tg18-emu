@@ -1,0 +1,85 @@
+name: Bug report
+description: Something doesn't work or looks wrong in tg18-emu
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a problem!
+
+        **Please never attach ROM dumps (.bin) or save files (.t18s, game.flash).**
+        Save files contain a full copy of the firmware, so they can't be shared here.
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What went wrong, and what did you expect instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: How can it be reproduced?
+      description: The steps that lead to the problem, as exactly as you can (which menu, which buttons, in the game or in the program).
+      placeholder: |
+        1. Open the Meal & Snack menu
+        2. Press B twice
+        3. ...
+
+  - type: dropdown
+    id: rom
+    attributes:
+      label: Which firmware version?
+      description: Shown in the window's title bar.
+      options:
+        - Fairy (EN v057)
+        - Magic (EN v058)
+        - Wonder Garden (EN v063)
+        - Fairy (JP v030)
+        - Magic (JP v031)
+        - Fantasy (JP v047)
+        - Pastel (JP v055)
+        - Sanrio (JP v056)
+        - Sweets (JP v062)
+        - Another / unknown dump
+        - Doesn't matter (not about the game)
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: tg18-emu version
+      description: The release you downloaded, or right-click tg18.exe > Properties > Details > File version.
+      placeholder: "0.1.0"
+
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Window or desktop toy?
+      options:
+        - Window
+        - Desktop toy
+        - Both / doesn't matter
+
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version
+      placeholder: "Windows 11 24H2"
+
+  - type: textarea
+    id: log
+    attributes:
+      label: tg18.log
+      description: If there is a tg18.log next to tg18.exe, paste its contents here or drag the file in. Screenshots are welcome too.
+
+  - type: checkboxes
+    id: no-roms
+    attributes:
+      label: Before sending
+      options:
+        - label: I did not attach any ROM dumps or save files.
+          required: true
