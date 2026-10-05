@@ -1521,12 +1521,12 @@ impl App {
             None => return,
         };
         let path = store.slot(n);
-        let q = format!("Load the save from {}?\n\nThe game you are playing now is autosaved first.", format_time(when));
+        let q = format!("Load the save from {}?\n\nThe game you are playing now is kept as before_load.t18s in its save folder.",
+                        format_time(when));
         if message_box(self.owner(), &format!("Load slot {}", n), &q, MB_YESNO | MB_ICONQUESTION) != IDYES {
             return;
         }
-        self.save_now(None, "Autosaved");
-        self.writer.wait();
+        self.keep_before_load();
         let image = self.image.clone().unwrap();
         let mut emu = Machine::new(image.clone(), &image, 0.0);
         if let Err(e) = Snapshot::load(&path).and_then(|s| s.restore(&mut emu)) {
@@ -1535,6 +1535,17 @@ impl App {
         }
         self.set_emu(emu);
         self.say(&format!("Loaded slot {}", n), 3.0);
+    }
+
+    /// Keep the game that loading a save replaces as before_load.t18s
+    /// (autosaves never overwrite it, so it can be loaded back).
+    fn keep_before_load(&mut self) {
+        if let (Some(emu), Some(store)) = (self.emu.as_ref(), self.store.as_ref()) {
+            let snap = Snapshot::capture(emu);
+            let dest = store.before_load();
+            self.writer.submit(move || snap.save(&dest).map_err(|e| format!("{}: {}", dest, e)));
+            self.writer.wait();
+        }
     }
 
     /// File > Load a save file: a snapshot (.t18s: slot, autosave, one from
@@ -1596,13 +1607,7 @@ impl App {
                 return; // the switch failed (it said why)
             }
         }
-        // keep the game it replaces
-        if let (Some(emu), Some(store)) = (self.emu.as_ref(), self.store.as_ref()) {
-            let snap = Snapshot::capture(emu);
-            let dest = store.before_load();
-            self.writer.submit(move || snap.save(&dest).map_err(|e| format!("{}: {}", dest, e)));
-            self.writer.wait();
-        }
+        self.keep_before_load();
         let image = self.image.clone().unwrap();
         let loaded = if is_snapshot {
             let mut emu = Machine::new(image.clone(), &image, 0.0);
