@@ -13,6 +13,7 @@
 
 mod audio;
 mod desk;
+mod egg;
 mod icon;
 mod tray;
 mod store;
