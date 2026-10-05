@@ -66,6 +66,8 @@ just before.
 FILES
 
   tg18.exe       the program (nothing to install)
+  SHA256.txt     tg18.exe's fingerprint, to check it is the original:
+                 in PowerShell, Get-FileHash tg18.exe must show the same
   roms\          your dumps
   saves\         your saves, one folder per dump
   settings.json  your settings (appears after the first start)
