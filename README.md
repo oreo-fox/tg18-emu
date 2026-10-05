@@ -65,13 +65,13 @@ Take note that running the executable will likely trigger a SmartScreen alert (W
 
 ####  Defender issue
 
-In some occasions tg18.exe will be detected by Microsoft Defender as "Trojan:Win32/Wacatac". This is mostly my fault because I submitted it to VirusTotal without a signature or meta information, which looks suspicious to some vendors (e.g. Microsoft). If this happens you will have to restore the file from quarantine and exclude it from scanning: 
+tg18.exe might be falsely detected by Microsoft Defender as "Trojan:Win32/Wacatac". This is mostly my fault because I submitted an earlier build to VirusTotal without a signature, meta data or manifest, which looks suspicious to some vendors (e.g. Microsoft). If this happens you will have to restore the file from quarantine and exclude it from scanning: 
 
 1. Windows Security (search for it in the Start menu) > Virus & threat protection > Protection history > Click the Trojan:Win32/Wacatac entry. Windows asks for admin permission; say yes > Restore
 
 2. Go to Virus & threat protection > Manage settings > Exclusions > Add or remove exclusions > Add an exclusion > Folder, and pick your "tg18-emu-win" folder.
 
-Sorry for the circumstances. I already submitted it to Microsoft for allowlisting but that can take time. I would like to have it signed in the future but this is either quite expensive or it needs to meet certain requirements first. So again, this will take time.
+Sorry for the circumstances. I already submitted it to Microsoft for allowlisting but that can take time.
 
 ### How to play
 
@@ -85,6 +85,7 @@ File:
 * Choose ROM folder: Choose a different ROM folder
 * Save now: save current state (flash save)
 * Save slot/Load slot: Save and load up to three saves to dedicated slots
+* Load save file: Load a save from your folder
 * Open save folder: open the folder containing all flash saves and autosaves (snapshots)
 * Quit: Quit tg18-emu. Progress will be saved on quitting but your Tama's status (hunger, aging, etc.) will not advance in the background. Your last save will be loaded if you re-start the application.
 
