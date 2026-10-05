@@ -59,6 +59,16 @@ AI was used to assist with reverse-engineering and programming.
 
 Take note that running the executable will likely trigger a SmartScreen alert (Windows protected your PC) since this is not a known software, select "More info" and "run anyway". This should only happen the first time you run it.
 
+####  Defender issue
+
+In some occasions tg18.exe will be detected by Microsoft Defender as "Trojan:Win32/Wacatac". This is mostly my fault because I submitted it to VirusTotal without a signature or meta information, which looks suspicious to some vendors (e.g. Microsoft). If this happens you will have to restore the file from quarantine and exclude it from scanning: 
+
+1. Windows Security (search for it in the Start menu) > Virus & threat protection > Protection history > Click the Trojan:Win32/Wacatac entry. Windows asks for admin permission; say yes > Restore
+
+2. Go to Virus & threat protection > Manage settings > Exclusions > Add or remove exclusions > Add an exclusion > Folder, and pick your "tg18-emu-win" folder.
+
+Sorry for the circumstances. I already submitted it to Microsoft for allowlisting but that can take time. I would like to have it signed in the future but this is either quite expensive or it needs to meet certain requirements first. So again, this will take time.
+
 ### How to play
 
 The emulator will start in windowed mode by default. You can switch to "On Desktop" mode by selecting "Settings -> Put the toy on the desktop" in the top menu. From there you can drag it around your desktop freely like a virtual toy. To open the menu in desktop mode right-click anywhere on the virtual toy. 
