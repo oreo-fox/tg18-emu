@@ -76,6 +76,8 @@ FILES
   saves\         your saves, one folder per dump
   settings.json  your settings (appears after the first start)
   tg18.log       only appears if something went wrong
+  THIRD-PARTY-LICENSES.txt, rust-std-licenses.html
+                 licences of the open-source libraries inside tg18.exe
 
 Please send tg18.log along if you run into a problem.
 

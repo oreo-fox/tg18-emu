@@ -1,5 +1,6 @@
 """Build the folder to hand out: tg18-emu-win with the program, a short
-guide, the license and empty roms and saves folders.
+guide, the license, the notices of the libraries inside the program and
+empty roms and saves folders.
 
     python tools/make_release.py [WHERE]
 
@@ -10,7 +11,9 @@ is printed if they hold anything besides their note (dumps and saves must
 not be handed out).
 """
 import hashlib
+import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -24,6 +27,41 @@ def crlf(src, dst):
     text = open(src, encoding='utf-8').read().replace('\r\n', '\n')
     with open(dst, 'w', encoding='utf-8', newline='\r\n') as f:
         f.write(text)
+
+
+def third_party_notices(env):
+    """Licence notices of the libraries built into tg18.exe (build-time
+    tools like serde_derive are not in it). Each is used under its MIT
+    licence, so the notice is its MIT text with the copyright holders."""
+    tree = subprocess.run(['cargo', 'tree', '-p', 'tg18-desktop', '-e', 'normal,no-proc-macro', '--prefix', 'none',
+                           '--format', '{p}'], cwd=ROOT, env=env, check=True, capture_output=True, text=True).stdout
+    # lines like "serde v1.0.229"; our own packages are skipped below
+    used = {(l.split()[0], l.split()[1].lstrip('v')) for l in tree.splitlines() if len(l.split()) >= 2}
+    meta = json.loads(subprocess.run(['cargo', 'metadata', '--format-version', '1'], cwd=ROOT, env=env, check=True,
+                                     capture_output=True, text=True).stdout)
+    out = ['Third-party software in tg18.exe',
+           '================================',
+           '',
+           'tg18.exe contains these open-source libraries. Each is used under its',
+           'MIT licence; their notices follow. The Rust standard library, also part',
+           'of the program, is described in rust-std-licenses.html.',
+           '']
+    for p in sorted(meta['packages'], key=lambda p: p['name']):
+        if p['source'] is None or (p['name'], p['version']) not in used:
+            continue
+        folder = os.path.dirname(p['manifest_path'])
+        mit = [f for f in sorted(os.listdir(folder)) if f.upper().startswith('LICENSE-MIT')]
+        if not mit:
+            raise SystemExit('no MIT licence file in %s' % folder)
+        text = open(os.path.join(folder, mit[0]), encoding='utf-8').read().strip()
+        out += ['-' * 72, '%s %s  (%s)' % (p['name'], p['version'], p['license']),
+                p.get('repository') or '', '']
+        # some MIT files have no "Copyright ..." line: name the authors
+        if not re.search(r'^\s*copyright', text, re.I | re.M):
+            authors = ', '.join(a.split(' <')[0] for a in p['authors']) or 'the %s authors' % p['name']
+            out += ['Copyright (c) %s' % authors, '']
+        out += [text, '']
+    return '\n'.join(out) + '\n'
 
 
 def main():
@@ -60,6 +98,14 @@ def main():
         f.write('%s *tg18.exe\n' % digest)
     crlf(os.path.join(ROOT, 'tools', 'release', 'README.txt'), os.path.join(dest, 'README.txt'))
     crlf(os.path.join(ROOT, 'LICENSE'), os.path.join(dest, 'LICENSE.txt'))
+    # notices of the libraries inside the exe, and the Rust standard
+    # library's own notice file (shipped with Rust for this purpose)
+    with open(os.path.join(dest, 'THIRD-PARTY-LICENSES.txt'), 'w', encoding='utf-8', newline='\r\n') as f:
+        f.write(third_party_notices(env))
+    sysroot = subprocess.run(['rustc', '--print', 'sysroot'], env=env, check=True, capture_output=True,
+                             text=True).stdout.strip()
+    shutil.copy2(os.path.join(sysroot, 'share', 'doc', 'rust', 'COPYRIGHT-library.html'),
+                 os.path.join(dest, 'rust-std-licenses.html'))
     for sub in ('roms', 'saves'):
         crlf(os.path.join(ROOT, sub, 'README.txt'), os.path.join(dest, sub, 'README.txt'))
 
@@ -68,7 +114,8 @@ def main():
     for dirpath, _, files in os.walk(dest):
         for f in files:
             rel = os.path.relpath(os.path.join(dirpath, f), dest)
-            if rel not in ('tg18.exe', 'SHA256.txt', 'README.txt', 'LICENSE.txt', os.path.join('roms', 'README.txt'),
+            if rel not in ('tg18.exe', 'SHA256.txt', 'README.txt', 'LICENSE.txt', 'THIRD-PARTY-LICENSES.txt',
+                           'rust-std-licenses.html', os.path.join('roms', 'README.txt'),
                            os.path.join('saves', 'README.txt')):
                 extra.append(rel)
     print('\n%s ready:' % dest)
