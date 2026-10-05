@@ -7,8 +7,9 @@ body:
       value: |
         Thanks for taking the time to report a problem!
 
-        **Please never attach ROM dumps (.bin) or save files (.t18s, game.flash).**
-        Save files contain a full copy of the firmware, so they can't be shared here.
+        **Please never attach ROM dumps (.bin), save files (.t18s, game.flash) or screenshots.**
+        Save files contain a full copy of the firmware, and screenshots show Bandai's graphics,
+        so they can't be shared here. Describe what you see in words instead.
 
   - type: textarea
     id: what
@@ -74,12 +75,12 @@ body:
     id: log
     attributes:
       label: tg18.log
-      description: If there is a tg18.log next to tg18.exe, paste its contents here or drag the file in. Screenshots are welcome too.
+      description: If there is a tg18.log next to tg18.exe, paste its contents here or drag the file in.
 
   - type: checkboxes
     id: no-roms
     attributes:
       label: Before sending
       options:
-        - label: I did not attach any ROM dumps or save files.
+        - label: I did not attach any ROM dumps, save files or screenshots.
           required: true
