@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/logo.png" alt="tg18-emu logo" width="480">
+</p>
+
 # tg18-emu
 
 tg18-emu is a Tamagotchi ON/Meets emulator for Windows written in Rust.

@@ -13,6 +13,8 @@
 # Screenshots show the game's copyrighted graphics.
 *.png
 frames/
+# except our own artwork
+!/docs/logo.png
 
 # Python
 __pycache__/
