@@ -112,3 +112,94 @@ pub fn write_wav(path: &str, events: &[(f64, f64, f64)], t0: f64, t1: f64, rate:
     }
     std::fs::write(path, f)
 }
+
+/// Recognises the pet's care call: the 5-note tune F7 D7 F7 G7 C8
+/// (64, 256, 64, 64 and 128 ms) the toy plays when the pet needs
+/// something, awake or asleep. Same tune in every version measured (EN
+/// Fairy, Magic, Wonder Garden). Other sounds the toy makes by itself
+/// (events, animations ending) don't match it.
+#[derive(Default)]
+pub struct CallDetector {
+    /// Recent notes as (pitch Hz, start, end), oldest first.
+    notes: std::collections::VecDeque<(f64, f64, f64)>,
+    /// The note playing now: (pitch, start).
+    cur: Option<(f64, f64)>,
+}
+
+/// The care call as (pitch Hz, length s).
+const CALL_TUNE: [(f64, f64); 5] = [(2793.0, 0.064), (2350.0, 0.256), (2793.0, 0.064), (3136.0, 0.064), (4187.0, 0.128)];
+
+impl CallDetector {
+    /// Feed the buzzer's (time, freq, duty) changes in order; true if the
+    /// call tune just finished.
+    pub fn feed(&mut self, events: &[(f64, f64, f64)]) -> bool {
+        let mut heard = false;
+        for &(t, freq, _) in events {
+            if let Some((f, start)) = self.cur {
+                if f == freq {
+                    continue;
+                }
+                self.notes.push_back((f, start, t));
+                if self.notes.len() > CALL_TUNE.len() {
+                    self.notes.pop_front();
+                }
+                heard |= self.is_call();
+            }
+            self.cur = (freq > 0.0).then_some((freq, t));
+        }
+        heard
+    }
+
+    fn is_call(&self) -> bool {
+        if self.notes.len() < CALL_TUNE.len() {
+            return false;
+        }
+        let close = |a: f64, b: f64, tol: f64| (a - b).abs() <= tol;
+        let tune_ok = self.notes.iter().zip(CALL_TUNE.iter()).all(|(&(f, s, e), &(want_f, want_len))| {
+            close(f, want_f, want_f * 0.03) && close(e - s, want_len, 0.02)
+        });
+        // all within about a second (the tune lasts 0.96 s with its pauses)
+        let span = self.notes.back().unwrap().2 - self.notes.front().unwrap().1;
+        tune_ok && span < 1.3
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The call as recorded from EN Fairy, with its pauses (freq 0).
+    fn call_at(t0: f64) -> Vec<(f64, f64, f64)> {
+        let mut ev = Vec::new();
+        let mut t = t0;
+        for (f, len, gap) in [(2793.0, 0.064, 0.128), (2350.0, 0.256, 0.192), (2793.0, 0.064, 0.032), (3136.0, 0.064, 0.032), (4187.0, 0.128, 0.0)] {
+            ev.push((t, f, 0.5));
+            t += len;
+            ev.push((t, 0.0, 0.5));
+            t += gap;
+        }
+        ev
+    }
+
+    #[test]
+    fn hears_the_call() {
+        let mut d = CallDetector::default();
+        assert!(d.feed(&call_at(1.0)));
+        // fed in small pieces, as the window does
+        let mut d = CallDetector::default();
+        let ev = call_at(5.0);
+        let heard = ev.chunks(1).map(|c| d.feed(c)).filter(|&h| h).count();
+        assert_eq!(heard, 1);
+    }
+
+    #[test]
+    fn ignores_other_sounds() {
+        let mut d = CallDetector::default();
+        // a falling "bling" (EN Magic, by itself) and a button beep
+        let ev = [(1.0, 4187.0, 0.5), (1.064, 2093.0, 0.5), (1.128, 1047.0, 0.5), (1.16, 0.0, 0.5), (2.0, 1865.0, 0.5), (2.032, 0.0, 0.5)];
+        assert!(!d.feed(&ev));
+        // the call's notes but far too slow
+        let slow: Vec<_> = call_at(10.0).into_iter().map(|(t, f, d)| (10.0 + (t - 10.0) * 2.0, f, d)).collect();
+        assert!(!d.feed(&slow));
+    }
+}

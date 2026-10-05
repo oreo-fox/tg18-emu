@@ -27,7 +27,7 @@ use std::time::{Duration, Instant};
 
 use tg18::save;
 use tg18::snapshot::{SnapError, Snapshot};
-use tg18::sound::ToneSynth;
+use tg18::sound::{CallDetector, ToneSynth};
 use tg18::{Key, Machine, Outcome, CPU_HZ};
 
 use store::{Newest, SaveStore, Settings, Writer};
@@ -54,7 +54,8 @@ const MAX_CATCHUP: f64 = 10.0;
 const MIN_HOLD: f64 = 0.05;
 /// How often the ROM folder is looked at for new dumps.
 const ROM_SCAN: Duration = Duration::from_secs(2);
-/// A sound counts as the toy calling if no button was pressed for this long.
+/// The care-call tune only counts if no button was pressed for this long
+/// (while someone is playing, the toy doesn't need to wiggle).
 const CALL_QUIET: Duration = Duration::from_secs(3);
 /// The desktop toy's wiggle when it calls: length, swings per second, and
 /// at most one wiggle per this many seconds.
@@ -552,6 +553,7 @@ struct App {
     last_press: Instant,
     /// When the desktop toy last started to wiggle, and its offset now.
     wiggle: Option<Instant>,
+    call_detector: CallDetector,
     wiggle_dx: i32,
     /// Next emulator step (main loop or timer).
     next_tick: Instant,
@@ -641,6 +643,7 @@ impl App {
             tray: None,
             last_press: now,
             wiggle: None,
+            call_detector: CallDetector::default(),
             wiggle_dx: 0,
             next_tick: now,
             popup: None,
@@ -1124,15 +1127,16 @@ impl App {
         }
     }
 
-    /// A sound nobody asked for (no button pressed for a while) means the
-    /// toy is calling: the desktop toy wiggles.
+    /// When the toy plays its care-call tune, the desktop toy wiggles.
+    /// Other sounds it makes by itself (events, the end of an animation)
+    /// don't count.
     fn notice_call(&mut self) {
         let emu = match self.emu.as_ref() {
             Some(e) => e,
             None => return,
         };
-        let sound = emu.sys.sound.events.iter().any(|e| e.1 > 0.0);
-        if sound
+        let call = self.call_detector.feed(&emu.sys.sound.events);
+        if call
             && self.desk.is_some()
             && !self.desk_hidden
             && self.last_press.elapsed() >= CALL_QUIET
