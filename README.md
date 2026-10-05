@@ -161,3 +161,14 @@ A prototype was written in Python first (using Unicorn) to test feasibility. Whi
 Want to know what's inside the toy and how the emulator imitates it? See
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for an overview with diagrams
 and the detailed hardware and firmware notes.
+
+## What's next
+
+The following is planned for the next few months:
+
+- Android port with widget
+- Cheats (Gotchi points, care mistakes, etc.)
+- Take screenshots
+- Custom shells
+
+If you have an idea or feature request, feel free to open a blank issue [here](https://github.com/oreo-fox/tg18-emu/issues).
