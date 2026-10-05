@@ -166,6 +166,13 @@ static HASHES: std::sync::Mutex<Option<HashCache>> = std::sync::Mutex::new(None)
 
 /// identity() of a dump on disk.
 pub fn file_identity(path: &Path) -> Option<(String, String)> {
+    let hash = file_hash(path)?;
+    let filename = path.file_name()?.to_string_lossy().to_string();
+    Some(identity_of_hash(&filename, hash))
+}
+
+/// Code fingerprint (tg18::code_hash) of a dump or flash save on disk.
+pub fn file_hash(path: &Path) -> Option<u64> {
     use std::io::Read;
     let meta = std::fs::metadata(path).ok()?;
     let (len, time) = (meta.len(), meta.modified().ok()?);
@@ -181,8 +188,7 @@ pub fn file_identity(path: &Path) -> Option<(String, String)> {
             h
         }
     };
-    let filename = path.file_name()?.to_string_lossy().to_string();
-    Some(identity_of_hash(&filename, hash))
+    Some(hash)
 }
 
 /// (file name, display name) of every tg18 image in folder, sorted by name.
@@ -261,6 +267,11 @@ impl SaveStore {
 
     pub fn slot(&self, n: usize) -> String {
         self.dir.join(format!("slot{}.t18s", n)).to_string_lossy().to_string()
+    }
+
+    /// Where the game is kept before File > Load a save file replaces it.
+    pub fn before_load(&self) -> String {
+        self.dir.join("before_load.t18s").to_string_lossy().to_string()
     }
 
     pub fn slot_time(&self, n: usize) -> Option<f64> {

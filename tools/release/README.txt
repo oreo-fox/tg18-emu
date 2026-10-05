@@ -37,6 +37,10 @@ The game saves by itself. Close the window normally (the X) and next time
 it carries on where you left off. While the program is closed, the pet is
 paused (like a toy without batteries) but the clock keeps going.
 
+File > Save to slot / Load slot keep up to three extra saves, and
+File > Load a save file opens any save (.t18s or game.flash), for example
+one a friend sent you.
+
 Settings menu: volume, screen size, colour, letters on the buttons,
 autosave, and "Set the toy's clock to Windows time now".
 

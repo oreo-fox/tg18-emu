@@ -104,6 +104,33 @@ pub struct BROWSEINFOW {
 }
 
 #[repr(C)]
+pub struct OPENFILENAMEW {
+    pub lStructSize: u32,
+    pub hwndOwner: HWND,
+    pub hInstance: HINSTANCE,
+    pub lpstrFilter: *const u16,
+    pub lpstrCustomFilter: *mut u16,
+    pub nMaxCustFilter: u32,
+    pub nFilterIndex: u32,
+    pub lpstrFile: *mut u16,
+    pub nMaxFile: u32,
+    pub lpstrFileTitle: *mut u16,
+    pub nMaxFileTitle: u32,
+    pub lpstrInitialDir: *const u16,
+    pub lpstrTitle: *const u16,
+    pub Flags: u32,
+    pub nFileOffset: u16,
+    pub nFileExtension: u16,
+    pub lpstrDefExt: *const u16,
+    pub lCustData: LPARAM,
+    pub lpfnHook: *const c_void,
+    pub lpTemplateName: *const u16,
+    pub pvReserved: *mut c_void,
+    pub dwReserved: u32,
+    pub FlagsEx: u32,
+}
+
+#[repr(C)]
 pub struct WAVEFORMATEX {
     pub wFormatTag: u16,
     pub nChannels: u16,
@@ -449,6 +476,11 @@ extern "system" {
     pub fn ShellExecuteW(h: HWND, op: *const u16, file: *const u16, params: *const u16, dir: *const u16, show: i32) -> isize;
 }
 
+#[link(name = "comdlg32")]
+extern "system" {
+    pub fn GetOpenFileNameW(ofn: *mut OPENFILENAMEW) -> i32;
+}
+
 #[link(name = "ole32")]
 extern "system" {
     pub fn CoInitializeEx(reserved: *const c_void, flags: u32) -> i32;
@@ -517,6 +549,51 @@ pub fn pick_folder(owner: HWND, title: &str) -> Option<String> {
         CoTaskMemFree(pidl);
         if ok != 0 { Some(from_wide(&path)) } else { None }
     }
+}
+
+/// Windows' Open dialog for one existing file; None if cancelled. `filter`
+/// is pairs of (description, patterns like "*.a;*.b").
+pub fn pick_file(owner: HWND, title: &str, start_dir: &str, filter: &[(&str, &str)]) -> Option<String> {
+    const OFN_HIDEREADONLY: u32 = 0x4;
+    const OFN_NOCHANGEDIR: u32 = 0x8;
+    const OFN_PATHMUSTEXIST: u32 = 0x800;
+    const OFN_FILEMUSTEXIST: u32 = 0x1000;
+    // "description\0patterns\0...\0\0"
+    let mut filt: Vec<u16> = Vec::new();
+    for (desc, pats) in filter {
+        filt.extend(desc.encode_utf16().chain([0]));
+        filt.extend(pats.encode_utf16().chain([0]));
+    }
+    filt.push(0);
+    let mut file = [0u16; 1024];
+    let title = wide(title);
+    let dir = wide(start_dir);
+    let mut ofn = OPENFILENAMEW {
+        lStructSize: std::mem::size_of::<OPENFILENAMEW>() as u32,
+        hwndOwner: owner,
+        hInstance: 0,
+        lpstrFilter: filt.as_ptr(),
+        lpstrCustomFilter: std::ptr::null_mut(),
+        nMaxCustFilter: 0,
+        nFilterIndex: 1,
+        lpstrFile: file.as_mut_ptr(),
+        nMaxFile: file.len() as u32,
+        lpstrFileTitle: std::ptr::null_mut(),
+        nMaxFileTitle: 0,
+        lpstrInitialDir: dir.as_ptr(),
+        lpstrTitle: title.as_ptr(),
+        Flags: OFN_HIDEREADONLY | OFN_NOCHANGEDIR | OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST,
+        nFileOffset: 0,
+        nFileExtension: 0,
+        lpstrDefExt: std::ptr::null(),
+        lCustData: 0,
+        lpfnHook: std::ptr::null(),
+        lpTemplateName: std::ptr::null(),
+        pvReserved: std::ptr::null_mut(),
+        dwReserved: 0,
+        FlagsEx: 0,
+    };
+    if unsafe { GetOpenFileNameW(&mut ofn) } != 0 { Some(from_wide(&file)) } else { None }
 }
 
 pub fn open_in_explorer(path: &str) {

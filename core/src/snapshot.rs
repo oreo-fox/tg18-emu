@@ -175,6 +175,11 @@ impl Snapshot {
         self.chunks.iter().find(|c| c.0 == name).map(|c| &c.1[..])
     }
 
+    /// Code fingerprint of the ROM the snapshot was taken with (code_hash).
+    pub fn rom_hash(&self) -> Option<u64> {
+        self.get("info").and_then(|d| R(d, 0).u64().ok())
+    }
+
     /// When the snapshot was taken (Unix time).
     pub fn saved_at(&self) -> f64 {
         self.get("info").and_then(|d| R(d, 8).f64().ok()).unwrap_or(0.0)

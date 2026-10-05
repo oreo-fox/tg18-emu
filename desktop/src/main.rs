@@ -133,6 +133,7 @@ const ID_SAVE_SLOT: u16 = 110;
 const ID_LOAD_SLOT: u16 = 120;
 const ID_OPEN_SAVES: u16 = 130;
 const ID_QUIT: u16 = 131;
+const ID_LOAD_FILE: u16 = 132;
 const ID_VOLUME: u16 = 200;
 const ID_MUTE: u16 = 210;
 const ID_SCALE: u16 = 220;
@@ -689,6 +690,7 @@ impl App {
             add(file, ID_SAVE_NOW, "Save now\tCtrl+S");
             sub(file, save_slot, "Save to slot");
             sub(file, load_slot, "Load slot");
+            add(file, ID_LOAD_FILE, "Load a save file\u{2026}");
             add(file, ID_OPEN_SAVES, "Open saves folder");
             sep(file);
             add(file, ID_QUIT, "Quit");
@@ -854,6 +856,7 @@ impl App {
                 let _ = std::fs::create_dir_all(&dir);
                 open_in_explorer(&dir.to_string_lossy());
             }
+            ID_LOAD_FILE => self.load_file(),
             ID_QUIT => self.close(),
             ID_MUTE => {
                 self.settings.muted = !self.settings.muted;
@@ -1308,24 +1311,7 @@ impl App {
     fn boot(&self, store: &SaveStore, image: &Arc<Vec<u8>>) -> Result<(Machine, f64, String), SnapError> {
         let pause = self.settings.pause_time_when_closed;
         match store.newest() {
-            Newest::Flash(meta) => {
-                let flash = save::load_flash(&store.flash, image)?.unwrap_or_else(|| image.to_vec());
-                let mut m = Machine::new(image.clone(), &flash, tg18::rtc_seconds_now());
-                if let Some(meta) = &meta {
-                    save::restore_rtc(&mut m, meta, !pause);
-                    if meta.asleep {
-                        // it went to sleep when the window closed: wake it with a
-                        // button (the clock has moved on, the pet hasn't)
-                        m.press(0.0, Key::B);
-                        let away = tg18::unix_now() - meta.saved_at;
-                        if pause || away < 60.0 {
-                            return Ok((m, 0.0, "Resumed from the last session".into()));
-                        }
-                        return Ok((m, 0.0, format!("Resumed; clock moved forward by {}", describe(away))));
-                    }
-                }
-                Ok((m, 0.0, "Booted from the flash save".into()))
-            }
+            Newest::Flash(meta) => self.boot_flash(&store.flash, meta, image),
             Newest::Snapshot => {
                 let mut m = Machine::new(image.clone(), image, 0.0);
                 let snap = Snapshot::load(&store.autosave)?;
@@ -1335,6 +1321,27 @@ impl App {
             }
             Newest::Nothing => Ok((Machine::new(image.clone(), image, tg18::rtc_seconds_now()), 0.0, "New game".into())),
         }
+    }
+
+    /// A machine booted from a flash save (game.flash + game.flash.json).
+    fn boot_flash(&self, path: &str, meta: Option<save::SaveMeta>, image: &Arc<Vec<u8>>) -> Result<(Machine, f64, String), SnapError> {
+        let pause = self.settings.pause_time_when_closed;
+        let flash = save::load_flash(path, image)?.unwrap_or_else(|| image.to_vec());
+        let mut m = Machine::new(image.clone(), &flash, tg18::rtc_seconds_now());
+        if let Some(meta) = &meta {
+            save::restore_rtc(&mut m, meta, !pause);
+            if meta.asleep {
+                // it went to sleep when the window closed: wake it with a
+                // button (the clock has moved on, the pet hasn't)
+                m.press(0.0, Key::B);
+                let away = tg18::unix_now() - meta.saved_at;
+                if pause || away < 60.0 {
+                    return Ok((m, 0.0, "Resumed from the last session".into()));
+                }
+                return Ok((m, 0.0, format!("Resumed; clock moved forward by {}", describe(away))));
+            }
+        }
+        Ok((m, 0.0, "Booted from the flash save".into()))
     }
 
     fn set_emu(&mut self, mut emu: Machine) {
@@ -1528,6 +1535,93 @@ impl App {
         }
         self.set_emu(emu);
         self.say(&format!("Loaded slot {}", n), 3.0);
+    }
+
+    /// File > Load a save file: a snapshot (.t18s: slot, autosave, one from
+    /// someone else) or a toy's own save (game.flash) from anywhere. A save of
+    /// another ROM version switches to that ROM if it is in the ROM folder.
+    /// The game it replaces is kept as before_load.t18s.
+    fn load_file(&mut self) {
+        let start = self.store.as_ref().map(|s| s.dir.clone()).unwrap_or_else(store::saves_dir);
+        let filter = [("tg18 saves (*.t18s, game.flash)", "*.t18s;*.flash"), ("All files", "*.*")];
+        let path = match pick_file(self.owner(), "Load a save", &start.to_string_lossy(), &filter) {
+            Some(p) => p,
+            None => return,
+        };
+        let name = Path::new(&path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        let is_snapshot = path.to_ascii_lowercase().ends_with(".t18s");
+        // which ROM it belongs to
+        let hash = if is_snapshot {
+            Snapshot::load(&path).ok().and_then(|s| s.rom_hash())
+        } else if std::fs::metadata(&path).map_or(false, |m| m.len() == tg18::FLASH_SIZE as u64) {
+            store::file_hash(Path::new(&path))
+        } else {
+            None
+        };
+        let hash = match hash {
+            Some(h) => h,
+            None => {
+                message_box(self.owner(), "Not a tg18 save",
+                            &format!("{} is not a tg18 save.\n\nSaves are .t18s files (slots, autosave) or game.flash.", name),
+                            MB_OK | MB_ICONERROR);
+                return;
+            }
+        };
+        if self.image.as_ref().map(|i| tg18::code_hash(i)) == Some(hash) {
+            let q = format!("Load {}?\n\nThe game you are playing now is kept as before_load.t18s in its save folder.", name);
+            if message_box(self.owner(), "Load a save", &q, MB_YESNO | MB_ICONQUESTION) != IDYES {
+                return;
+            }
+        } else {
+            let version = tg18::roms::identify_hash(hash).map(|k| k.display_name());
+            let folder = self.settings.rom_folder();
+            let rom = self.roms.iter().map(|r| r.0.clone()).find(|f| store::file_hash(&folder.join(f)) == Some(hash));
+            let rom = match rom {
+                Some(r) => r,
+                None => {
+                    let what = version.map_or("another ROM".to_string(), |v| format!("the {} ROM", v));
+                    message_box(self.owner(), "ROM missing",
+                                &format!("{} is a save for {}, which is not in your ROM folder.\n\nPut that dump in the ROM folder, then load the save again.", name, what),
+                                MB_OK | MB_ICONERROR);
+                    return;
+                }
+            };
+            let what = version.unwrap_or_else(|| rom.clone());
+            let q = format!("{} is a save for {}.\n\nSwitch to {} and load it? The game you are playing now is saved first.", name, what, what);
+            if message_box(self.owner(), "Load a save", &q, MB_YESNO | MB_ICONQUESTION) != IDYES {
+                return;
+            }
+            self.switch_rom(&rom);
+            if self.image.as_ref().map(|i| tg18::code_hash(i)) != Some(hash) {
+                return; // the switch failed (it said why)
+            }
+        }
+        // keep the game it replaces
+        if let (Some(emu), Some(store)) = (self.emu.as_ref(), self.store.as_ref()) {
+            let snap = Snapshot::capture(emu);
+            let dest = store.before_load();
+            self.writer.submit(move || snap.save(&dest).map_err(|e| format!("{}: {}", dest, e)));
+            self.writer.wait();
+        }
+        let image = self.image.clone().unwrap();
+        let loaded = if is_snapshot {
+            let mut emu = Machine::new(image.clone(), &image, 0.0);
+            Snapshot::load(&path).and_then(|s| s.restore(&mut emu)).map(|_| (emu, 0.0))
+        } else {
+            self.boot_flash(&path, save::read_meta(&path), &image).map(|(m, elapsed, _)| (m, elapsed))
+        };
+        match loaded {
+            Ok((emu, elapsed)) => {
+                self.set_emu(emu);
+                if elapsed > 0.0 {
+                    self.advance_clock(elapsed);
+                }
+                self.say(&format!("Loaded {}", name), 3.0);
+            }
+            Err(e) => {
+                message_box(self.owner(), "Save does not match", &format!("{} can't be loaded: {}", name, e), MB_OK | MB_ICONERROR);
+            }
+        }
     }
 
     /// Store the current game before closing it (window closed, other ROM).
